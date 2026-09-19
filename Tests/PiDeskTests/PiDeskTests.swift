@@ -102,6 +102,14 @@ struct PiDeskTests {
         pasteboard.setString("ordinary text", forType: .string)
         #expect(monitor.handle(event) != nil)
         #expect(!pasted)
+
+        var completed = false
+        monitor.completeSuggestion = { completed = true; return true }
+        let tab = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
+            timestamp: 0, windowNumber: 0, context: nil, characters: "\t", charactersIgnoringModifiers: "\t",
+            isARepeat: false, keyCode: 48))
+        #expect(monitor.handle(tab) == nil)
+        #expect(completed)
     }
 
     @Test @MainActor func workspacePersistenceAndIsolation() throws {

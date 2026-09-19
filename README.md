@@ -33,6 +33,7 @@ These are **advisory PiDesk locks**: terminal Pi and other applications do not h
 - Independent conversations, streaming text/thinking, expandable tool calls/results.
 - Paste images with ⌘V (or the image button), preview/remove them before sending, and render image messages in the transcript.
 - Model and supported thinking-level selection from Pi's actual catalog.
+- Composer completion for `@` project paths on the connected local/SSH client and for extension, prompt-template, and skill slash commands reported by that Pi RPC session.
 - Steering messages during generation; Stop/Escape clears and restores queued messages before aborting.
 - New conversations, rename, context compaction, session info/usage, copy, Markdown transcript export including thinking, tool arguments/results, and supported inline images. **Export full Pi history** saves raw entries from all branches as JSON (not an importable Pi JSONL session).
 - Cancellable, read-only saved-session discovery with progress, bounded parallel reads, and metadata reuse on refresh. Set **Session directory** in Edit client for custom `--session-dir` storage (also used for new conversations). Without it, discovery follows the host's Pi environment/defaults.
@@ -43,7 +44,7 @@ These are **advisory PiDesk locks**: terminal Pi and other applications do not h
 - Common Markdown tables, nested/ordered/task lists, headings, quotes, and code fences; supported embedded image blocks render as bounded thumbnails without fetching remote images. This is not a full CommonMark/HTML/footnote renderer.
 - Transient extension dialogs/widgets/statuses reset when disconnecting/reconnecting.
 
-**⌘⇧N** creates a conversation; **⌘Return** sends; **⌘,** opens Settings. Client and conversation menus expose additional actions.
+**⌘⇧N** creates a conversation; **⌘Return** sends; **⌘,** opens Settings. Type **@** for connected-project paths or **/** for available Pi commands, then click a completion or press **Tab**. Client and conversation menus expose additional actions.
 
 Pi can execute tools with the permissions of the host account. PiDesk does not add a sandbox or automatically approve project trust. Disconnecting or quitting stops the GUI-owned processes; remote jobs are not a durable background service.
 

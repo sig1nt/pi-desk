@@ -24,6 +24,8 @@ final class SessionController: ObservableObject, Identifiable {
     @Published private(set) var extensionStatus: [String: String] = [:]
     @Published private(set) var widgets: [String: String] = [:]
     @Published private(set) var pendingImages: [PendingImage] = []
+    @Published private(set) var commands: [PiCommand] = []
+    @Published private(set) var projectPaths: [ProjectPath] = []
     @Published var error: String?
     var onRecordChange: ((SessionRecord) -> Void)?
     private var connection: RPCConnection?
@@ -34,6 +36,7 @@ final class SessionController: ObservableObject, Identifiable {
     private struct Block { var kind: String; var text = ""; var name = "" }
     private var blocks: [Int: Block] = [:]
     private var commandNames: Set<String> = []
+    private var fileDiscoveryTask: Task<Void, Never>?
     private struct Submission { let text: String; let images: [PendingImage] }
     private var pendingSubmission: Submission?
     private var unknownDeliveryImageIDs: Set<UUID> = []
@@ -42,10 +45,19 @@ final class SessionController: ObservableObject, Identifiable {
     var canSend: Bool { status == .connected && record.deliveryUnknown == nil && !isSubmitting && !isChangingSettings && (!record.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !pendingImages.isEmpty) }
     var canConfigure: Bool { status == .connected && !isBusy && !isSubmitting && !isChangingSettings }
     var statusText: String { isBusy ? (activity.isEmpty ? "Working…" : activity) : status.rawValue }
+    var composerSuggestions: [ComposerSuggestion] {
+        guard status == .connected else { return [] }
+        return ComposerCompletion.suggestions(text: record.draft, commands: commands, paths: projectPaths)
+    }
+
+    func applyComposerSuggestion(_ suggestion: ComposerSuggestion) {
+        record.draft = ComposerCompletion.applying(suggestion, to: record.draft)
+    }
 
     func connect() async {
         guard status != .connecting, status != .connected else { return }
         error = nil
+        fileDiscoveryTask?.cancel(); fileDiscoveryTask = nil
         clearExtensionState()
         status = .connecting
         let attempt = UUID()
@@ -80,11 +92,16 @@ final class SessionController: ObservableObject, Identifiable {
             let history = try await rpc.request("get_messages")
             guard connection === rpc else { return }
             messages = parseConversationMessages(history["messages"] as? [JSONObject] ?? [])
-            if let commands = try? await rpc.request("get_commands") {
-                commandNames = Set((commands["commands"] as? [JSONObject] ?? []).compactMap { $0["name"] as? String })
+            if let response = try? await rpc.request("get_commands") {
+                let available = (response["commands"] as? [JSONObject] ?? []).compactMap(PiCommand.init)
+                commands = Self.composerCommands(available)
+                commandNames = Set(available.map(\.name))
+            } else {
+                commands = Self.composerCommands([])
             }
             guard connection === rpc, rpc.isRunning else { return }
             status = .connected
+            discoverProjectFiles(for: attempt)
             await refreshStats(rpc)
         } catch {
             guard connection === rpc else { return }
@@ -99,6 +116,7 @@ final class SessionController: ObservableObject, Identifiable {
     @discardableResult
     func disconnect() -> RPCConnection? {
         connectAttempt = UUID()
+        fileDiscoveryTask?.cancel(); fileDiscoveryTask = nil
         if let submission = pendingSubmission {
             record.deliveryUnknown = submission.text
             restoreImages(submission.images, deliveryUnknown: true)
@@ -128,7 +146,34 @@ final class SessionController: ObservableObject, Identifiable {
     }
 
     private func clearExtensionState() {
-        dialogs = []; widgets = [:]; extensionStatus = [:]; commandNames = []
+        dialogs = []; widgets = [:]; extensionStatus = [:]; commandNames = []; commands = []; projectPaths = []
+    }
+
+    private static func composerCommands(_ available: [PiCommand]) -> [PiCommand] {
+        var result = available
+        let local = [
+            PiCommand(name: "compact", description: "Compact conversation context", source: "PiDesk", argumentHint: "[instructions]"),
+            PiCommand(name: "name", description: "Set the conversation name", source: "PiDesk", argumentHint: "<name>")
+        ]
+        for command in local where !result.contains(where: { $0.name == command.name }) { result.append(command) }
+        return result.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    private func discoverProjectFiles(for attempt: UUID) {
+        let client = client, workingDirectory = record.workingDirectory
+        fileDiscoveryTask?.cancel()
+        fileDiscoveryTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let paths = try await ProjectFileInventory.list(client: client, workingDirectory: workingDirectory)
+                guard self.connectAttempt == attempt, self.status == .connected else { return }
+                self.projectPaths = paths
+            } catch is CancellationError {
+                return
+            } catch {
+                // Mention discovery is optional; a failure must not take down a healthy Pi session.
+            }
+        }
     }
 
     func resolveUnknownDelivery(restoreDraft: Bool) {
@@ -288,7 +333,10 @@ final class SessionController: ObservableObject, Identifiable {
         // Built-in TUI commands are not RPC prompts. Avoid accidentally sending them to the model.
         if text.hasPrefix("/"), let first = text.split(whereSeparator: { $0.isWhitespace }).first {
             let command = String(first.dropFirst())
-            if command == "compact" { record.draft = ""; await compact(); return }
+            if command == "compact" {
+                let instructions = String(text.dropFirst(first.count)).trimmingCharacters(in: .whitespaces)
+                record.draft = ""; await compact(customInstructions: instructions.isEmpty ? nil : instructions); return
+            }
             if command == "name" {
                 let name = String(text.dropFirst(first.count)).trimmingCharacters(in: .whitespaces)
                 if !name.isEmpty { await rename(name); if error == nil { record.draft = "" } }
@@ -380,10 +428,12 @@ final class SessionController: ObservableObject, Identifiable {
         record.title = name
     }
 
-    func compact() async {
+    func compact(customInstructions: String? = nil) async {
         guard canConfigure, let rpc = connection else { return }
         await configure(rpc) {
-            _ = try await rpc.request("compact", timeout: 600)
+            var fields: JSONObject = [:]
+            if let customInstructions { fields["customInstructions"] = customInstructions }
+            _ = try await rpc.request("compact", fields: fields, timeout: 600)
             let result = try await rpc.request("get_messages")
             guard self.connection === rpc else { return }
             self.messages = parseConversationMessages(result["messages"] as? [JSONObject] ?? [])

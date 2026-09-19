@@ -101,6 +101,34 @@ struct RPCTests {
         if let rpc = session.disconnect() { await rpc.waitForExit() }
     }
 
+    @Test func connectedCapabilitiesDriveComposerCompletions() async throws {
+        let session = try controller()
+        await session.connect()
+        session.record.draft = "/cu"
+        let command = try #require(session.composerSuggestions.first)
+        #expect(command.title == "/custom")
+        #expect(command.detail == "Fixture command")
+        session.applyComposerSuggestion(command)
+        #expect(session.record.draft == "/custom ")
+        if let rpc = session.disconnect() { await rpc.waitForExit() }
+    }
+
+    @Test func projectPathsDriveMentionCompletions() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("PiDesk mentions " + UUID().uuidString)
+        let docs = directory.appendingPathComponent("docs")
+        try FileManager.default.createDirectory(at: docs, withIntermediateDirectories: true)
+        try Data("Guide".utf8).write(to: docs.appendingPathComponent("guide.md"))
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let paths = try await ProjectFileInventory.list(client: Client(name: "Local"), workingDirectory: directory.path)
+        #expect(paths.contains(ProjectPath(path: "docs", isDirectory: true)))
+        #expect(paths.contains(ProjectPath(path: "docs/guide.md", isDirectory: false)))
+
+        let suggestions = ComposerCompletion.suggestions(text: "Read @docs", commands: [], paths: paths)
+        let file = try #require(suggestions.first(where: { $0.value == "docs/guide.md" }))
+        #expect(ComposerCompletion.applying(file, to: "Read @docs") == "Read @docs/guide.md ")
+    }
+
     @Test func reconnectAndCompaction() async throws {
         let session = try controller()
         await session.connect()

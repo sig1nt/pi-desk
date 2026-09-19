@@ -344,6 +344,7 @@ struct EmptyConversationView: View {
 final class ComposerImagePasteMonitor: ObservableObject {
     var isActive = false
     var pasteImage: (() -> Void)?
+    var completeSuggestion: (() -> Bool)?
     private var token: Any?
 
     func start() {
@@ -361,7 +362,11 @@ final class ComposerImagePasteMonitor: ObservableObject {
 
     func handle(_ event: NSEvent) -> NSEvent? {
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        guard isActive, modifiers.contains(.command), !modifiers.contains(.option), !modifiers.contains(.control),
+        guard isActive else { return event }
+        if event.keyCode == 48,
+           modifiers.intersection([.command, .option, .control, .shift]).isEmpty,
+           completeSuggestion?() == true { return nil }
+        guard modifiers.contains(.command), !modifiers.contains(.option), !modifiers.contains(.control),
               event.charactersIgnoringModifiers?.lowercased() == "v",
               NSPasteboard.general.canReadObject(forClasses: [NSImage.self], options: nil) else { return event }
         pasteImage?()
@@ -402,8 +407,31 @@ struct Composer: View {
     @StateObject private var imagePasteMonitor = ComposerImagePasteMonitor()
     @FocusState private var editorFocused: Bool
     var body: some View {
-        VStack(spacing: 10) {
+        let suggestions = controller.composerSuggestions
+        return VStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 9) {
+                if !suggestions.isEmpty {
+                    VStack(spacing: 0) {
+                        ForEach(suggestions) { suggestion in
+                            Button {
+                                controller.applyComposerSuggestion(suggestion)
+                                editorFocused = true
+                            } label: {
+                                HStack(spacing: 9) {
+                                    Image(systemName: suggestion.kind == .command ? "terminal" : (suggestion.isDirectory ? "folder" : "doc"))
+                                        .foregroundStyle(.secondary).frame(width: 18)
+                                    Text(suggestion.title).font(.callout.monospaced()).lineLimit(1)
+                                    Spacer(minLength: 8)
+                                    Text(suggestion.detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                }.padding(.horizontal, 9).padding(.vertical, 7).contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            if suggestion.id != suggestions.last?.id { Divider().padding(.leading, 36) }
+                        }
+                    }
+                    .background(Color(nsColor: .windowBackgroundColor).opacity(0.7), in: RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(.quaternary))
+                }
                 if !controller.pendingImages.isEmpty {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 8) {
@@ -453,6 +481,11 @@ struct Composer: View {
         }
         .onAppear {
             imagePasteMonitor.pasteImage = { [weak controller] in controller?.pasteImagesFromClipboard() }
+            imagePasteMonitor.completeSuggestion = { [weak controller] in
+                guard let controller, let suggestion = controller.composerSuggestions.first else { return false }
+                controller.applyComposerSuggestion(suggestion)
+                return true
+            }
             imagePasteMonitor.start()
         }
         .onDisappear { imagePasteMonitor.stop() }

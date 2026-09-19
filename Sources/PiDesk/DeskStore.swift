@@ -262,6 +262,37 @@ struct SavedSession: Identifiable, Codable {
     var modified: Date { Date(timeIntervalSince1970: modifiedMS / 1000) }
 }
 
+/// Read-only discovery of mentionable paths in the connected client's project directory.
+@MainActor
+enum ProjectFileInventory {
+    static func list(client: Client, workingDirectory: String) async throws -> [ProjectPath] {
+        try Task.checkCancellation()
+        try client.validate()
+        guard let url = PiResources.bundle.url(forResource: "list-project-files", withExtension: "js") else {
+            throw DeskError.message("Project file discovery helper is missing.")
+        }
+        let script = try String(contentsOf: url, encoding: .utf8)
+        let command = "cd " + ProcessInvocation.path(workingDirectory) + " && exec node -e " + ProcessInvocation.quote(script)
+        let rpc = RPCConnection()
+        try rpc.start(ProcessInvocation.shell(client: client, command: command))
+        do {
+            let paths = try await withTaskCancellationHandler {
+                let result = try await rpc.request("list", timeout: 120)
+                try Task.checkCancellation()
+                return (result["entries"] as? [JSONObject] ?? []).compactMap(ProjectPath.init)
+            } onCancel: {
+                Task { @MainActor in rpc.stop() }
+            }
+            rpc.stop(); await rpc.waitForExit()
+            return paths
+        } catch {
+            rpc.stop(); await rpc.waitForExit()
+            if Task.isCancelled { throw CancellationError() }
+            throw error
+        }
+    }
+}
+
 /// Read-only discovery. Conversation content is loaded by Pi, not reconstructed from its tree here.
 @MainActor
 enum SessionInventory {

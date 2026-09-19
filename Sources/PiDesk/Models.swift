@@ -88,6 +88,123 @@ struct PiModel: Identifiable, Equatable {
     }
 }
 
+struct PiCommand: Identifiable, Equatable {
+    let name: String
+    let description: String
+    let source: String
+    let argumentHint: String
+    var id: String { name }
+
+    init?(json: JSONObject) {
+        guard let name = json["name"] as? String, !name.isEmpty else { return nil }
+        self.name = name
+        description = json["description"] as? String ?? ""
+        source = json["source"] as? String ?? "command"
+        argumentHint = json["argumentHint"] as? String ?? json["argument-hint"] as? String ?? ""
+    }
+
+    init(name: String, description: String, source: String, argumentHint: String = "") {
+        self.name = name; self.description = description; self.source = source; self.argumentHint = argumentHint
+    }
+}
+
+struct ProjectPath: Identifiable, Equatable {
+    let path: String
+    let isDirectory: Bool
+    var id: String { path }
+
+    init?(json: JSONObject) {
+        guard let path = json["path"] as? String, !path.isEmpty else { return nil }
+        self.path = path
+        isDirectory = json["isDirectory"] as? Bool == true
+    }
+
+    init(path: String, isDirectory: Bool) { self.path = path; self.isDirectory = isDirectory }
+}
+
+struct ComposerSuggestion: Identifiable, Equatable {
+    enum Kind: String { case command, path }
+    let kind: Kind
+    let value: String
+    let title: String
+    let detail: String
+    let isDirectory: Bool
+    var id: String { kind.rawValue + ":" + value }
+}
+
+enum ComposerCompletion {
+    static func suggestions(text: String, commands: [PiCommand], paths: [ProjectPath], limit: Int = 8) -> [ComposerSuggestion] {
+        if text.hasPrefix("/"), !text.dropFirst().contains(where: { $0.isWhitespace }) {
+            let query = String(text.dropFirst()).lowercased()
+            return commands
+                .filter { fuzzyScore($0.name, query: query) != nil }
+                .sorted {
+                    let left = fuzzyScore($0.name, query: query) ?? 0, right = fuzzyScore($1.name, query: query) ?? 0
+                    return left == right ? $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending : left > right
+                }
+                .prefix(limit).map {
+                    let description = [$0.argumentHint, $0.description].filter { !$0.isEmpty }.joined(separator: $0.argumentHint.isEmpty || $0.description.isEmpty ? "" : " — ")
+                    return ComposerSuggestion(kind: .command, value: $0.name, title: "/" + $0.name, detail: description.isEmpty ? $0.source : description, isDirectory: false)
+                }
+        }
+        guard let range = mentionRange(in: text) else { return [] }
+        var query = String(text[range].dropFirst())
+        if query.hasPrefix("\"") { query.removeFirst() }
+        let lowered = query.lowercased()
+        return paths
+            .filter { fuzzyScore($0.path, query: lowered) != nil }
+            .sorted {
+                let left = fuzzyScore($0.path, query: lowered) ?? 0, right = fuzzyScore($1.path, query: lowered) ?? 0
+                if left != right { return left > right }
+                if $0.isDirectory != $1.isDirectory { return $0.isDirectory }
+                return $0.path.localizedCaseInsensitiveCompare($1.path) == .orderedAscending
+            }
+            .prefix(limit).map {
+                ComposerSuggestion(kind: .path, value: $0.path, title: "@" + $0.path + ($0.isDirectory ? "/" : ""), detail: $0.isDirectory ? "Folder" : "Project file", isDirectory: $0.isDirectory)
+            }
+    }
+
+    static func applying(_ suggestion: ComposerSuggestion, to text: String) -> String {
+        switch suggestion.kind {
+        case .command:
+            guard text.hasPrefix("/"), !text.dropFirst().contains(where: { $0.isWhitespace }) else { return text }
+            return "/" + suggestion.value + " "
+        case .path:
+            guard let range = mentionRange(in: text) else { return text }
+            let escaped = suggestion.value.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+            let reference = escaped.contains(where: { $0.isWhitespace }) ? "@\"\(escaped)\"" : "@" + escaped
+            return text.replacingCharacters(in: range, with: reference + " ")
+        }
+    }
+
+    private static func mentionRange(in text: String) -> Range<String.Index>? {
+        if let quoted = text.range(of: "@\"", options: .backwards),
+           (quoted.lowerBound == text.startIndex || text[text.index(before: quoted.lowerBound)].isWhitespace),
+           !text[quoted.upperBound...].contains("\"") {
+            return quoted.lowerBound..<text.endIndex
+        }
+        let start = text.lastIndex(where: { $0.isWhitespace }).map { text.index(after: $0) } ?? text.startIndex
+        guard start < text.endIndex, text[start] == "@" else { return nil }
+        return start..<text.endIndex
+    }
+
+    private static func fuzzyScore(_ candidate: String, query: String) -> Int? {
+        guard !query.isEmpty else { return 1 }
+        let value = candidate.lowercased()
+        let name = value.split(separator: "/").last.map(String.init) ?? value
+        if name == query { return 100 }
+        if name.hasPrefix(query) { return 80 }
+        if name.contains(query) { return 60 }
+        if value.contains(query) { return 40 }
+        var position = value.startIndex
+        for character in query {
+            guard let match = value[position...].firstIndex(of: character) else { return nil }
+            position = value.index(after: match)
+        }
+        return 20
+    }
+}
+
 struct ChatMessage: Identifiable {
     var id = UUID().uuidString
     var role: String

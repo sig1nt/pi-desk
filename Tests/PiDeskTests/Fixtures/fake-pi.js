@@ -39,7 +39,7 @@ function handle(request) {
     case 'get_messages': response(request, { messages: history }); break;
     case 'get_available_models': response(request, { models: [model, { provider: 'test', id: 'two', name: 'Test Two' }] }); break;
     case 'get_available_thinking_levels': response(request, { levels: ['off', 'medium', 'high'] }); break;
-    case 'get_commands': response(request, { commands: [{ name: 'custom', source: 'extension' }] }); break;
+    case 'get_commands': response(request, { commands: [{ name: 'custom', description: 'Fixture command', source: 'extension' }] }); break;
     case 'get_session_stats': response(request, { tokens: { total: 42 }, cost: 0.002, contextUsage: { percent: 1 } }); break;
     case 'set_model': model = { provider: request.provider, id: request.modelId, name: 'Changed' }; response(request); break;
     case 'cycle_model':
