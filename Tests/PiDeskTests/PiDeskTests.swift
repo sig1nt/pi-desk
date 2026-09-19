@@ -31,6 +31,12 @@ struct PiDeskTests {
         #expect(invocation.arguments.contains("dev@build-host"))
         #expect(ProcessInvocation.quote("a'b") == "'a'\\''b'")
         #expect(ProcessInvocation.path("~/a b") == "\"$HOME\"/'a b'")
+        var fork = record
+        fork.forkFromPath = "/old/session.jsonl"
+        let forkInvocation = try ProcessInvocation.rpc(client: client, session: fork)
+        #expect(forkInvocation.arguments.joined(separator: " ").contains("--fork"))
+        #expect(forkInvocation.arguments.joined(separator: " ").contains("/old/session.jsonl"))
+        #expect(forkInvocation.arguments.joined(separator: " ").contains("--session") == false)
         for host in ["-oProxyCommand=evil", "host;echo bad", "a\nb", "ssh://host", "host -p 22"] {
             client.host = host
             #expect(throws: (any Error).self) { try client.validate() }
@@ -49,6 +55,12 @@ struct PiDeskTests {
         #expect(message.body.contains("Quota exceeded"))
         #expect(message.isError)
         #expect(message.arguments.contains("pwd"))
+        var tool = ChatMessage(role: "toolResult", toolName: "bash", arguments: "{\n  \"command\" : \"swift test\"\n}")
+        #expect(tool.toolDisplayName == "swift test")
+        tool.arguments = "pwd"
+        #expect(tool.toolDisplayName == "pwd")
+        tool.toolName = "read"
+        #expect(tool.toolDisplayName == "read")
         let blocks = MarkdownBlock.parse("# Title\n```swift\nlet x = 1\n\n// hi\n```\nDone")
         #expect(blocks.count == 3)
         #expect(blocks[1].text == "let x = 1\n\n// hi")
@@ -74,6 +86,24 @@ struct PiDeskTests {
         let second = restored.controller(for: SessionRecord(workingDirectory: "/project"), client: remote)
         #expect(second.record.draft.isEmpty)
         #expect(first.record.draft == "Unsent draft")
+    }
+
+    @Test @MainActor func changingClientDirectoryMovesAndForksExistingConversations() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let store = DeskStore(workspaceURL: url)
+        let originalSessionID = try #require(store.selectedSessionID)
+        let controller = try #require(store.selectedController)
+        controller.record.sessionPath = "/tmp/original-session.jsonl"
+        var client = try #require(store.selectedClient)
+        client.workingDirectory = "/tmp/new-project"
+        try store.saveClient(client)
+        let moved = try #require(store.selectedClient?.sessions.first(where: { $0.id == originalSessionID }))
+        #expect(moved.workingDirectory == "/tmp/new-project")
+        #expect(moved.sessionPath == nil)
+        #expect(moved.forkFromPath == "/tmp/original-session.jsonl")
+        #expect(store.selectedSessionID == originalSessionID)
+        #expect(store.selectedController?.record.workingDirectory == "/tmp/new-project")
     }
 
     @Test @MainActor func corruptWorkspaceIsNotOverwritten() throws {

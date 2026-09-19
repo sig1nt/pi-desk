@@ -10,7 +10,7 @@ Requires macOS 13+, a current Pi installation, and Node.js on each client host. 
 swift run PiDesk
 ```
 
-Authenticate using Pi in a terminal (`pi`, then `/login`) on each host. PiDesk uses those credentials and Pi's existing settings. Configure the Pi executable and project directory in the client's **••• → Edit client** menu. Directory changes apply to new conversations.
+Authenticate using Pi in a terminal (`pi`, then `/login`) on each host. PiDesk uses those credentials and Pi's existing settings. Configure the Pi executable and project directory in the client's **••• → Edit client** menu. Changing the directory disconnects that client's conversations and moves them to the new directory. Existing persisted conversations are forked on their next connection, preserving the active history while giving the new Pi session the new working directory.
 
 For remote clients, enter an SSH config alias or `user@hostname` and a port. First connect from Terminal to verify the host key and configure key/agent authentication. PiDesk uses batch-mode SSH with strict host-key checking; it does not prompt for passwords or accept unknown keys automatically. Remote hosts must provide a POSIX-compatible shell.
 

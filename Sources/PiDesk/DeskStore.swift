@@ -94,14 +94,36 @@ final class DeskStore: ObservableObject {
     func saveClient(_ client: Client) throws {
         try client.validate()
         if let index = clients.firstIndex(where: { $0.id == client.id }) {
-            // Existing conversations keep their own working directories.
+            let previous = clients[index]
+            let sameHost = previous.isLocal == client.isLocal &&
+                (client.isLocal || (previous.host == client.host && previous.port == client.port))
+            let reconnectIDs = Set(previous.sessions.compactMap { record -> UUID? in
+                guard let status = controllers[record.id]?.status,
+                      status == .connected || status == .connecting else { return nil }
+                return record.id
+            })
             var updated = client
-            updated.sessions = clients[index].sessions
-            for record in updated.sessions { controllers[record.id]?.reconfigure(updated) }
+            updated.sessions = previous.sessions.map { existing in
+                var record = existing
+                guard record.workingDirectory != client.workingDirectory else { return record }
+                record.workingDirectory = client.workingDirectory
+                // A resumed session takes its cwd from its immutable session header, not
+                // the process's initial `cd`. Forking preserves its active branch while
+                // creating a new Pi session rooted in the newly configured directory.
+                record.forkFromPath = sameHost ? record.sessionPath : nil
+                record.sessionPath = nil
+                return record
+            }
             clients[index] = updated
+            for record in updated.sessions { controllers[record.id]?.reconfigure(updated, record: record) }
             selectedClientID = updated.id
-            selectedSessionID = updated.sessions.first?.id
+            if updated.sessions.contains(where: { $0.id == selectedSessionID }) == false {
+                selectedSessionID = updated.sessions.first?.id
+            }
             save()
+            for id in reconnectIDs {
+                if let controller = controllers[id] { Task { await controller.connect() } }
+            }
         } else {
             var new = client
             new.sessions = [SessionRecord(workingDirectory: new.workingDirectory)]

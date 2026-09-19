@@ -33,7 +33,7 @@ struct ClientSheet: View {
                 .font(.caption).foregroundStyle(.secondary)
             Text("Pi can read, write, and run commands in the working directory. Project trust follows Pi's settings; PiDesk does not automatically approve projects.")
                 .font(.caption).foregroundStyle(.secondary)
-            if isEditing { Text("Saving disconnects this client's conversations. Existing conversations keep their working directories.").font(.caption).foregroundStyle(.orange) }
+            if isEditing { Text("Saving restarts connected conversations. Changing the directory moves them to it; saved conversations are forked so their active history is preserved.").font(.caption).foregroundStyle(.orange) }
             if let error { Text(error).font(.caption).foregroundStyle(.red) }
             HStack {
                 Spacer()

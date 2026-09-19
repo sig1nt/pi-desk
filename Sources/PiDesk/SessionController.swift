@@ -101,9 +101,10 @@ final class SessionController: ObservableObject, Identifiable {
         return rpc ?? retiringConnection
     }
 
-    func reconfigure(_ client: Client) {
+    func reconfigure(_ client: Client, record: SessionRecord) {
         disconnect()
         self.client = client
+        self.record = record
     }
 
     private func resetActivity() {
@@ -122,7 +123,10 @@ final class SessionController: ObservableObject, Identifiable {
         if revision == activityRevision {
             isBusy = state["isStreaming"] as? Bool == true || state["isCompacting"] as? Bool == true
         }
-        if let file = state["sessionFile"] as? String { record.sessionPath = file }
+        if let file = state["sessionFile"] as? String {
+            record.sessionPath = file
+            record.forkFromPath = nil
+        }
         if let name = state["sessionName"] as? String, !name.isEmpty { record.title = name }
     }
 

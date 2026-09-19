@@ -42,6 +42,9 @@ struct SessionRecord: Identifiable, Codable, Equatable {
     var title = "New conversation"
     var workingDirectory: String
     var sessionPath: String?
+    /// When moving a conversation to another directory, Pi forks the old active branch
+    /// into a new session whose header and runtime both use the new directory.
+    var forkFromPath: String?
     var updatedAt = Date()
     var draft = ""
 
@@ -88,6 +91,15 @@ struct ChatMessage: Identifiable {
     var timestamp = Date()
     var isUser: Bool { role == "user" }
     var time: String { timestamp.formatted(date: .omitted, time: .shortened) }
+    var toolDisplayName: String {
+        guard toolName == "bash" else { return toolName ?? "Tool" }
+        if let data = arguments.data(using: .utf8),
+           let object = try? JSONSerialization.jsonObject(with: data) as? JSONObject,
+           let command = object["command"] as? String,
+           !command.isEmpty { return command }
+        let command = arguments.trimmingCharacters(in: .whitespacesAndNewlines)
+        return command.isEmpty ? "bash" : command
+    }
 
     static func parse(_ json: JSONObject) -> ChatMessage? {
         let role = json["role"] as? String ?? "custom"
@@ -189,7 +201,8 @@ struct ProcessInvocation {
     static func rpc(client: Client, session: SessionRecord) throws -> ProcessInvocation {
         try client.validate()
         var command = "exec " + path(client.executable) + " --mode rpc"
-        if let file = session.sessionPath { command += " --session " + path(file) }
+        if let source = session.forkFromPath { command += " --fork " + path(source) }
+        else if let file = session.sessionPath { command += " --session " + path(file) }
         return shell(client: client, command: "cd " + path(session.workingDirectory) + " && " + command)
     }
 

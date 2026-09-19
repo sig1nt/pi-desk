@@ -7,7 +7,7 @@ struct MessageBubble: View {
             if message.isUser { Spacer(minLength: 40) }
             VStack(alignment: message.isUser ? .trailing : .leading, spacing: 5) {
                 VStack(alignment: .leading, spacing: 8) {
-                    if let tool = message.toolName {
+                    if message.toolName != nil {
                         DisclosureGroup {
                             if !message.arguments.isEmpty { code(message.arguments) }
                             if !message.body.isEmpty { code(message.body) }
@@ -15,7 +15,7 @@ struct MessageBubble: View {
                             HStack {
                                 if message.isRunning { ProgressView().controlSize(.mini) }
                                 Image(systemName: message.isError ? "exclamationmark.triangle" : "terminal")
-                                Text(tool).font(.callout.monospaced())
+                                Text(message.toolDisplayName).font(.callout.monospaced()).lineLimit(2)
                                 Text(message.isRunning ? "Running…" : message.isError ? "Failed" : "Done").font(.caption).foregroundStyle(.secondary)
                             }
                         }
