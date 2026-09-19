@@ -28,6 +28,7 @@ struct ClientSheet: View {
                     }
                 }
                 TextField("Pi executable", text: $client.executable)
+                TextField("Session directory (optional)", text: Binding(get: { client.sessionDirectory ?? "" }, set: { client.sessionDirectory = $0.isEmpty ? nil : $0 }))
             }
             Text(client.isLocal ? "Uses Pi's existing local authentication and settings. The executable can be pi or a full path (not a shell command)." : "Uses ~/.ssh/config and SSH keys/agent. First connect once in Terminal to verify the host key. Pi and Node must be installed and authenticated on the remote host.")
                 .font(.caption).foregroundStyle(.secondary)
@@ -55,6 +56,11 @@ extension NumberFormatter {
 struct SettingsSheet: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject var store: DeskStore
+    @State private var recoveryError: String?
+    @State private var recovering = false
+    @State private var confirmReset = false
+    @State private var importURL: URL?
+    @State private var confirmImport = false
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text("Settings").font(.title2.bold())
@@ -64,9 +70,40 @@ struct SettingsSheet: View {
             Text("Authentication").font(.headline)
             Text("PiDesk uses Pi's own credentials on each host. Run pi and use /login in a terminal to authenticate. No API keys or SSH passwords are stored by PiDesk.").font(.callout).foregroundStyle(.secondary)
             Text("Sessions are saved by Pi on the host where they run. PiDesk saves client profiles, session references, and drafts in ~/Library/Application Support/PiDesk/workspace.json.").font(.caption).foregroundStyle(.secondary)
-            HStack { Spacer(); Button("Done") { store.save(); dismiss() }.keyboardShortcut(.defaultAction) }
+            Divider()
+            Text(store.recoveryRequired ? "Workspace recovery required" : "Workspace recovery").font(.headline)
+            Text("Import a workspace or start fresh. The current file is backed up alongside the original before replacement; all conversations disconnect. Pi session files are untouched.").font(.caption).foregroundStyle(.secondary)
+            Text(store.workspacePath).font(.caption2).textSelection(.enabled)
+            HStack {
+                Button("Import workspace…") {
+                    let panel = NSOpenPanel(); panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
+                    if panel.runModal() == .OK, let url = panel.url { importURL = url; confirmImport = true }
+                }
+                Button("Start fresh…") { confirmReset = true }
+                if recovering { ProgressView().controlSize(.small) }
+            }.disabled(recovering)
+            if let recoveryError { Text(recoveryError).font(.caption).foregroundStyle(.red) }
+            HStack { Spacer(); Button("Done") { store.save(); dismiss() }.keyboardShortcut(.defaultAction).disabled(recovering) }
         }.padding(26).frame(width: 480)
         .onChange(of: store.connectOnLaunch) { _ in store.scheduleSave() }
+        .interactiveDismissDisabled(recovering)
+        .alert("Replace workspace?", isPresented: $confirmReset) {
+            Button("Cancel", role: .cancel) {}
+            Button("Back up and start fresh", role: .destructive) { recover(nil) }
+        } message: { Text("This removes current profiles and drafts from PiDesk, after preserving a backup. Running conversations will disconnect.") }
+        .alert("Import workspace?", isPresented: $confirmImport) {
+            Button("Cancel", role: .cancel) {}
+            Button("Back up and import") { if let importURL { recover(importURL) } }
+        } message: { Text("Only import files you trust: profiles contain executable paths and SSH destinations. Importing does not connect automatically.") }
+    }
+
+    private func recover(_ source: URL?) {
+        recovering = true; recoveryError = nil
+        Task {
+            do { try await store.recoverWorkspace(from: source) }
+            catch { recoveryError = error.localizedDescription }
+            recovering = false
+        }
     }
 }
 
@@ -79,13 +116,22 @@ struct SessionBrowserSheet: View {
     @State private var query = ""
     @State private var loading = true
     @State private var error: String?
+    @State private var progress = "Connecting…"
+    @State private var loadTask: Task<Void, Never>?
+    @State private var loadID = UUID()
     private var filtered: [SavedSession] { sessions.filter { query.isEmpty || $0.title.localizedCaseInsensitiveContains(query) || $0.cwd.localizedCaseInsensitiveContains(query) } }
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Open saved session").font(.title2.bold())
             Text("\(client.name) · Pi session history").foregroundStyle(.secondary)
             TextField("Search conversations or directories", text: $query)
-            if loading { ProgressView("Loading sessions…").frame(maxWidth: .infinity, minHeight: 260) }
+            if loading {
+                VStack(spacing: 12) {
+                    ProgressView("Loading sessions…")
+                    Text(progress).font(.caption).foregroundStyle(.secondary)
+                    Button("Stop discovery") { loadTask?.cancel() }
+                }.frame(maxWidth: .infinity, minHeight: 260)
+            }
             else if let error {
                 ScrollView { Text(error).foregroundStyle(.red).textSelection(.enabled) }.frame(height: 260)
             } else if filtered.isEmpty {
@@ -116,9 +162,10 @@ struct SessionBrowserSheet: View {
                 .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
             }
+            if !loading { Text(progress).font(.caption2).foregroundStyle(.secondary) }
             Text("Close the session in other Pi clients before opening it here. PiDesk resumes its active branch; it does not attach to a running terminal process.").font(.caption).foregroundStyle(.secondary)
             HStack {
-                Button("Refresh") { Task { await load() } }.disabled(loading)
+                Button("Refresh", action: load).disabled(loading)
                 Spacer()
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
                 Button("Open") {
@@ -126,13 +173,26 @@ struct SessionBrowserSheet: View {
                 }.disabled(filtered.first(where: { $0.path == selected }) == nil).keyboardShortcut(.defaultAction).buttonStyle(.borderedProminent)
             }
         }.padding(26).frame(width: 590)
-        .task { await load() }
+        .onAppear(perform: load)
+        .onDisappear { loadTask?.cancel() }
     }
-    private func load() async {
-        loading = true; error = nil
-        do { sessions = try await SessionInventory.list(client: client) }
-        catch { self.error = error.localizedDescription }
-        loading = false
+    private func load() {
+        loadTask?.cancel()
+        let id = UUID(); loadID = id
+        loading = true; error = nil; progress = "Connecting…"
+        loadTask = Task {
+            do {
+                let result = try await SessionInventory.list(client: client) { text in
+                    if loadID == id { progress = text }
+                }
+                guard loadID == id else { return }
+                sessions = result
+                if !sessions.contains(where: { $0.path == selected }) { selected = nil }
+            } catch is CancellationError {
+                if loadID == id { progress = "Discovery cancelled. Refresh to try again." }
+            } catch { if loadID == id { self.error = error.localizedDescription } }
+            if loadID == id { loading = false }
+        }
     }
 }
 

@@ -97,6 +97,7 @@ struct ContentView: View {
         } message: { Text("This disconnects its conversations and removes the client from PiDesk. Pi's session files are not deleted.") }
         .alert("PiDesk", isPresented: Binding(get: { store.error != nil }, set: { if !$0 { store.error = nil } })) {
             Button("OK") { store.error = nil }
+            if store.recoveryRequired { Button("Recover workspace…") { store.error = nil; showingSettings = true } }
         } message: { Text(store.error ?? "") }
     }
 }
@@ -205,6 +206,8 @@ struct Conversation: View {
     @State private var renaming = false
     @State private var showingInfo = false
     @State private var followBottom = true
+    @State private var transcriptHeight: CGFloat = 0
+    @State private var viewportHeight: CGFloat = 0
 
     var body: some View {
         VStack(spacing: 0) {
@@ -228,7 +231,8 @@ struct Conversation: View {
                     Divider()
                     Button("Compact context") { Task { await controller.compact() } }.disabled(!controller.canConfigure)
                     Button("Copy last response") { copy(controller.messages.last(where: { $0.role == "assistant" })?.body ?? "") }
-                    Button("Export transcript…", action: exportTranscript).disabled(controller.messages.isEmpty)
+                    Button("Export transcript…") { exportTranscript(fullHistory: false) }.disabled(controller.messages.isEmpty)
+                    Button("Export full Pi history…") { exportTranscript(fullHistory: true) }.disabled(controller.status != .connected)
                     Divider()
                     Button("Disconnect") { controller.disconnect() }.disabled(controller.status == .disconnected)
                 } label: { Image(systemName: "ellipsis.circle").font(.title3).foregroundStyle(.secondary) }
@@ -236,16 +240,34 @@ struct Conversation: View {
             }.padding(.horizontal, 28).padding(.vertical, 17)
             Divider()
             ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 18) {
-                        if controller.messages.isEmpty { EmptyConversationView() }
-                        ForEach(controller.messages) { MessageBubble(message: $0) }
-                        Color.clear.frame(height: 1).id("bottom")
-                            .onAppear { followBottom = true }.onDisappear { followBottom = false }
-                    }.frame(maxWidth: 720).frame(maxWidth: .infinity, alignment: .center).padding(.top, 34).padding(.horizontal, 26)
+                GeometryReader { viewport in
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 18) {
+                            if controller.messages.isEmpty { EmptyConversationView() }
+                            ForEach(controller.messages) { MessageBubble(message: $0) }
+                            Color.clear.frame(height: 1).id("bottom")
+                        }.frame(maxWidth: 720).frame(maxWidth: .infinity, alignment: .center).padding(.top, 34).padding(.horizontal, 26)
+                            .background(GeometryReader { geometry in
+                                Color.clear.preference(key: TranscriptFrameKey.self, value: geometry.frame(in: .named("transcript")))
+                            })
+                    }
+                    .coordinateSpace(name: "transcript")
+                    .onPreferenceChange(TranscriptFrameKey.self) { frame in
+                        let resized = abs(frame.height - transcriptHeight) > 0.5 || abs(viewport.size.height - viewportHeight) > 0.5
+                        transcriptHeight = frame.height; viewportHeight = viewport.size.height
+                        if resized {
+                            // Layout growth (including thinking/tools/images) must not look like the user scrolling up.
+                            if followBottom { proxy.scrollTo("bottom", anchor: .bottom) }
+                        } else { followBottom = frame.maxY <= viewport.size.height + 60 }
+                    }
+                    .overlay(alignment: .bottomTrailing) {
+                        if !followBottom {
+                            Button { followBottom = true; proxy.scrollTo("bottom", anchor: .bottom) } label: {
+                                Image(systemName: "arrow.down.to.line").padding(8)
+                            }.help("Jump to latest message").padding(12)
+                        }
+                    }
                 }
-                .onChange(of: controller.messages.count) { _ in if followBottom { proxy.scrollTo("bottom", anchor: .bottom) } }
-                .onChange(of: controller.messages.last?.body) { _ in if followBottom { proxy.scrollTo("bottom", anchor: .bottom) } }
                 .onChange(of: controller.isSubmitting) { submitting in if submitting { followBottom = true; proxy.scrollTo("bottom", anchor: .bottom) } }
             }
             if let error = controller.error {
@@ -265,6 +287,17 @@ struct Conversation: View {
                 if !controller.queued.isEmpty {
                     Text("\(controller.queued.count) queued · Stop restores queued messages to the editor").font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
                 }
+                if let text = controller.record.deliveryUnknown {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label("Delivery unknown — this message may already be running", systemImage: "exclamationmark.triangle").font(.caption.bold())
+                        Text(text).font(.caption).lineLimit(3).textSelection(.enabled)
+                        Text("Check the conversation after reconnecting before deciding to resend. Sending is paused until you choose.").font(.caption).foregroundStyle(.secondary)
+                        HStack {
+                            Button("Keep sent / discard") { controller.resolveUnknownDelivery(restoreDraft: false) }
+                            Button("Restore for manual resend") { controller.resolveUnknownDelivery(restoreDraft: true) }
+                        }.controlSize(.small)
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                }
                 Composer(controller: controller)
             }.padding(24)
         }.frame(maxWidth: .infinity)
@@ -273,18 +306,26 @@ struct Conversation: View {
         .sheet(isPresented: $showingInfo) { SessionInfoSheet(controller: controller) }
     }
 
-    private func exportTranscript() {
+    private func exportTranscript(fullHistory: Bool) {
         let panel = NSSavePanel()
-        panel.nameFieldStringValue = "conversation.md"
+        panel.nameFieldStringValue = fullHistory ? "pi-history.json" : "conversation.md"
         panel.begin { result in
             guard result == .OK, let url = panel.url else { return }
-            let text = controller.messages.map { message in
-                "## \(message.isUser ? "You" : message.toolName ?? "Pi")\n\n\(message.body)"
-            }.joined(separator: "\n\n")
-            do { try text.write(to: url, atomically: true, encoding: .utf8) }
-            catch { controller.error = error.localizedDescription }
+            Task {
+                do {
+                    let data: Data
+                    if fullHistory { data = try await controller.exportHistory() }
+                    else { data = Data(try await controller.exportMarkdown().utf8) }
+                    try data.write(to: url, options: .atomic)
+                } catch { controller.error = error.localizedDescription }
+            }
         }
     }
+}
+
+private struct TranscriptFrameKey: PreferenceKey {
+    static var defaultValue: CGRect = .zero
+    static func reduce(value: inout CGRect, nextValue: () -> CGRect) { value = nextValue() }
 }
 
 func copy(_ text: String) { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string) }

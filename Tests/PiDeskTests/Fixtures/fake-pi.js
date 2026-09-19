@@ -3,6 +3,9 @@
 let pending = '', busy = false, queue = [], name, thinking = 'medium';
 let model = { provider: 'test', id: 'one', name: 'Test One' };
 const history = [];
+// Each independent controller is a distinct writer; reconnect preserves its path.
+const sessionArgument = process.argv.indexOf('--session');
+const sessionFile = sessionArgument >= 0 ? process.argv[sessionArgument + 1] : `/tmp/fake-session-${process.pid}.jsonl`;
 const emit = value => process.stdout.write(JSON.stringify(value) + '\n');
 const response = (request, data = {}, error) => emit({ type: 'response', id: request.id, command: request.type, success: !error, data, error });
 const message = (role, content) => ({ role, content, timestamp: Date.now() });
@@ -31,7 +34,7 @@ function complete(text) {
 }
 function handle(request) {
   switch (request.type) {
-    case 'get_state': response(request, { model, thinkingLevel: thinking, isStreaming: busy, sessionFile: '/tmp/fake-session.jsonl', sessionName: name }); break;
+    case 'get_state': response(request, { model, thinkingLevel: thinking, isStreaming: busy, sessionFile, sessionName: name }); break;
     case 'get_messages': response(request, { messages: history }); break;
     case 'get_available_models': response(request, { models: [model, { provider: 'test', id: 'two', name: 'Test Two' }] }); break;
     case 'get_available_thinking_levels': response(request, { levels: ['off', 'medium', 'high'] }); break;

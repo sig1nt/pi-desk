@@ -6,7 +6,7 @@ let package = Package(
     platforms: [.macOS(.v13)],
     products: [.executable(name: "PiDesk", targets: ["PiDesk"])],
     targets: [
-        .executableTarget(name: "PiDesk", resources: [.copy("Resources/list-sessions.js")]),
+        .executableTarget(name: "PiDesk", resources: [.copy("Resources/list-sessions.js"), .copy("Resources/session-process.js")]),
         .testTarget(name: "PiDeskTests", dependencies: ["PiDesk"], resources: [.copy("Fixtures")])
     ]
 )

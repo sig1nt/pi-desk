@@ -12,7 +12,7 @@ final class RPCConnection {
     private var stderr = ""
     private var stopping = false
     private let writer = DispatchQueue(label: "PiDesk.rpc.writer")
-    private var pending: [String: (CheckedContinuation<JSONObject, Error>, DispatchWorkItem)] = [:]
+    private var pending: [String: (CheckedContinuation<JSONObject, Error>, DispatchWorkItem, String)] = [:]
 
     var isRunning: Bool { process?.isRunning == true && !stopping }
 
@@ -70,10 +70,11 @@ final class RPCConnection {
         command["id"] = id
         return try await withCheckedThrowingContinuation { continuation in
             let expiry = DispatchWorkItem { [weak self] in
-                guard let self, let (waiting, _) = self.pending.removeValue(forKey: id) else { return }
-                waiting.resume(throwing: DeskError.message("Pi timed out responding to \(type). Check the connection before retrying; the command may have been accepted."))
+                guard let self, let (waiting, _, command) = self.pending.removeValue(forKey: id) else { return }
+                let message = "Pi timed out responding to \(type). Check the connection before retrying; the command may have been accepted."
+                waiting.resume(throwing: command == "prompt" ? DeskError.deliveryUnknown(message) : DeskError.message(message))
             }
-            pending[id] = (continuation, expiry)
+            pending[id] = (continuation, expiry, type)
             DispatchQueue.main.asyncAfter(deadline: .now() + timeout, execute: expiry)
             do { try send(command) }
             catch { finish(id: id, result: .failure(error)) }
@@ -109,13 +110,16 @@ final class RPCConnection {
     }
 
     private func finish(id: String, result: Result<JSONObject, Error>) {
-        guard let (continuation, expiry) = pending.removeValue(forKey: id) else { return }
+        guard let (continuation, expiry, _) = pending.removeValue(forKey: id) else { return }
         expiry.cancel()
         continuation.resume(with: result)
     }
 
     private func rejectPending(_ message: String) {
-        for id in Array(pending.keys) { finish(id: id, result: .failure(DeskError.message(message))) }
+        for (id, entry) in pending {
+            let error: DeskError = entry.2 == "prompt" ? .deliveryUnknown(message) : .message(message)
+            finish(id: id, result: .failure(error))
+        }
     }
 
     private func fail(_ message: String) {

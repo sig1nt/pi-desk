@@ -66,7 +66,7 @@ struct RPCTests {
         await session.connect()
         #expect(session.status == .connected)
         #expect(session.models.count == 2)
-        #expect(session.record.sessionPath == "/tmp/fake-session.jsonl")
+        #expect(session.record.sessionPath?.hasPrefix("/tmp/fake-session-") == true)
         await session.setModel("test/two")
         await session.setThinking("high")
         #expect(session.modelID == "test/two")

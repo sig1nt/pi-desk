@@ -13,7 +13,10 @@ final class DeskStore: ObservableObject {
     private var saveWork: DispatchWorkItem?
     private let workspaceURL: URL
     private var canPersist = true
+    private var recoveringWorkspace = false
     private var started = false
+    private var retiringConnections: [RPCConnection] = []
+    @Published private(set) var recoveryRequired = false
 
     init(workspaceURL: URL? = nil) {
         self.workspaceURL = workspaceURL ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -29,6 +32,7 @@ final class DeskStore: ObservableObject {
             } catch {
                 // Never overwrite an unreadable workspace with empty defaults.
                 canPersist = false
+                recoveryRequired = true
                 self.error = "Could not load \(self.workspaceURL.path). The file will not be overwritten.\n\(error.localizedDescription)"
             }
         }
@@ -74,7 +78,7 @@ final class DeskStore: ObservableObject {
     func start() {
         guard !started else { return }
         started = true
-        if connectOnLaunch, let controller = selectedController { Task { await controller.connect() } }
+        if connectOnLaunch, !recoveryRequired, let controller = selectedController { Task { await controller.connect() } }
     }
 
     func select(client: Client, session: SessionRecord? = nil) {
@@ -148,7 +152,13 @@ final class DeskStore: ObservableObject {
     }
 
     private func discardController(_ id: UUID) {
-        controllers.removeValue(forKey: id)?.disconnect()
+        if let rpc = controllers.removeValue(forKey: id)?.disconnect() {
+            retiringConnections.append(rpc)
+            Task {
+                await rpc.waitForExit()
+                retiringConnections.removeAll { $0 === rpc }
+            }
+        }
         observations.removeValue(forKey: id)
     }
 
@@ -174,7 +184,7 @@ final class DeskStore: ObservableObject {
 
     func save() {
         saveWork?.cancel()
-        guard canPersist else { return }
+        guard canPersist, !recoveringWorkspace else { return }
         do {
             let workspace = Workspace(clients: clients, selectedClientID: selectedClientID, selectedSessionID: selectedSessionID, connectOnLaunch: connectOnLaunch)
             let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -184,59 +194,114 @@ final class DeskStore: ObservableObject {
         } catch { self.error = "Could not save workspace: \(error.localizedDescription)" }
     }
 
+    /// Validate an import before touching the original. Always preserve the original as a backup.
+    func recoverWorkspace(from source: URL?) async throws {
+        guard !recoveringWorkspace else { return }
+        recoveringWorkspace = true
+        saveWork?.cancel()
+        defer { recoveringWorkspace = false; saveWork?.cancel() }
+        let replacement: Workspace
+        if let source {
+            replacement = try JSONDecoder().decode(Workspace.self, from: Data(contentsOf: source))
+            guard replacement.version == 1 else { throw DeskError.message("Unsupported workspace version.") }
+            var ids = Set<UUID>()
+            for client in replacement.clients {
+                try client.validate()
+                guard ids.insert(client.id).inserted else { throw DeskError.message("Duplicate client ID in workspace.") }
+                for session in client.sessions {
+                    guard ids.insert(session.id).inserted else { throw DeskError.message("Duplicate session ID in workspace.") }
+                }
+            }
+        } else {
+            var local = Client(name: "This Mac")
+            local.sessions = [SessionRecord(workingDirectory: local.workingDirectory)]
+            replacement = Workspace(clients: [local], selectedClientID: local.id, selectedSessionID: local.sessions.first?.id, connectOnLaunch: false)
+        }
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let data = try encoder.encode(replacement)
+        let manager = FileManager.default
+        try manager.createDirectory(at: workspaceURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if manager.fileExists(atPath: workspaceURL.path) {
+            let backup = workspaceURL.appendingPathExtension("backup-" + UUID().uuidString)
+            try manager.copyItem(at: workspaceURL, to: backup)
+            try manager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: backup.path)
+        }
+        // Disconnect before swapping profiles, but don't save the broken/current workspace.
+        let connections = controllers.values.compactMap { $0.disconnect() } + retiringConnections
+        for connection in connections { await connection.waitForExit() }
+        try data.write(to: workspaceURL, options: .atomic)
+        // Once replaced, always adopt the imported in-memory state, even if chmod fails.
+        try? manager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: workspaceURL.path)
+        controllers = [:]; observations = [:]; retiringConnections = []
+        clients = replacement.clients
+        selectedClientID = replacement.selectedClientID
+        if selectedClient == nil { selectedClientID = clients.first?.id }
+        selectedSessionID = replacement.selectedSessionID
+        if selectedClient?.sessions.contains(where: { $0.id == selectedSessionID }) != true { selectedSessionID = selectedClient?.sessions.first?.id }
+        connectOnLaunch = replacement.connectOnLaunch
+        canPersist = true; recoveryRequired = false; error = nil
+        // Import/recovery never auto-connects or submits restored drafts.
+    }
+
+    var workspacePath: String { workspaceURL.path }
+
     func shutdown() async {
         save()
-        let connections = controllers.values.compactMap { $0.disconnect() }
+        let connections = controllers.values.compactMap { $0.disconnect() } + retiringConnections
         for connection in connections { await connection.waitForExit() }
     }
 }
 
-struct SavedSession: Identifiable, Decodable {
+struct SavedSession: Identifiable, Codable {
     var id: String { path }
     let path: String
     let cwd: String
     let title: String
     let modifiedMS: Double
+    var signature: String? = nil
     var modified: Date { Date(timeIntervalSince1970: modifiedMS / 1000) }
 }
 
 /// Read-only discovery. Conversation content is loaded by Pi, not reconstructed from its tree here.
+@MainActor
 enum SessionInventory {
-    static func list(client: Client) async throws -> [SavedSession] {
+    private static var cache: [String: [SavedSession]] = [:]
+
+    static func list(client: Client, progress: @escaping (String) -> Void = { _ in }) async throws -> [SavedSession] {
+        try Task.checkCancellation()
         try client.validate()
-        guard let url = Bundle.module.url(forResource: "list-sessions", withExtension: "js") else { throw DeskError.message("Session discovery helper is missing.") }
+        guard let url = PiResources.bundle.url(forResource: "list-sessions", withExtension: "js") else { throw DeskError.message("Session discovery helper is missing.") }
         let script = try String(contentsOf: url, encoding: .utf8)
         let invocation = ProcessInvocation.shell(client: client, command: "exec node -e " + ProcessInvocation.quote(script))
-        return try await Task.detached(priority: .userInitiated) {
-            let data = try run(invocation)
-            return try JSONDecoder().decode([SavedSession].self, from: data).sorted { $0.modified > $1.modified }
-        }.value
-    }
-
-    private static func run(_ invocation: ProcessInvocation) throws -> Data {
-        let process = Process(), stdout = Pipe(), stderr = Pipe()
-        process.executableURL = URL(fileURLWithPath: invocation.executable)
-        process.arguments = invocation.arguments
-        process.standardOutput = stdout; process.standardError = stderr
-        process.standardInput = FileHandle.nullDevice
-        try process.run()
-        // Drain stderr concurrently so a noisy shell cannot fill its pipe and deadlock.
-        let errors = OutputCapture()
-        let group = DispatchGroup()
-        group.enter()
-        DispatchQueue.global().async { errors.data = stderr.fileHandleForReading.readDataToEndOfFile(); group.leave() }
-        let timeout = DispatchWorkItem { if process.isRunning { process.terminate() } }
-        let killWork = DispatchWorkItem { if process.isRunning { kill(process.processIdentifier, SIGKILL) } }
-        DispatchQueue.global().asyncAfter(deadline: .now() + 25, execute: timeout)
-        DispatchQueue.global().asyncAfter(deadline: .now() + 28, execute: killWork)
-        let data = stdout.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit(); group.wait()
-        timeout.cancel(); killWork.cancel()
-        guard process.terminationStatus == 0 else {
-            throw DeskError.message("Could not list Pi sessions. Check SSH and Node on this client.\n" + String(decoding: errors.data.suffix(8000), as: UTF8.self))
+        let rpc = RPCConnection()
+        let key = "\(client.isLocal):\(client.host):\(client.port):\(client.sessionDirectory ?? "")"
+        rpc.onEvent = { event in
+            guard event["type"] as? String == "inventory_progress" else { return }
+            progress("\(event["scanned"] as? Int ?? 0) scanned · \(event["found"] as? Int ?? 0) found · \(event["reused"] as? Int ?? 0) cached · \(event["skipped"] as? Int ?? 0) skipped")
         }
-        return data
+        try rpc.start(invocation)
+        do {
+            let sessions = try await withTaskCancellationHandler {
+                try Task.checkCancellation()
+                let cached = try JSONSerialization.jsonObject(with: JSONEncoder().encode(cache[key] ?? []))
+                var fields: JSONObject = ["cached": cached]
+                if let directory = client.sessionDirectory { fields["directory"] = directory }
+                let result = try await rpc.request("list", fields: fields, timeout: 300)
+                try Task.checkCancellation()
+                let data = try JSONSerialization.data(withJSONObject: result["sessions"] ?? [])
+                return try JSONDecoder().decode([SavedSession].self, from: data).sorted { $0.modified > $1.modified }
+            } onCancel: {
+                Task { @MainActor in rpc.stop() }
+            }
+            rpc.stop(); await rpc.waitForExit()
+            // Bound the in-memory metadata cache; no session contents are cached here.
+            if cache.count >= 8 { cache.removeAll() }
+            cache[key] = sessions
+            return sessions
+        } catch {
+            rpc.stop(); await rpc.waitForExit()
+            if Task.isCancelled { throw CancellationError() }
+            throw error
+        }
     }
-
-    private final class OutputCapture: @unchecked Sendable { var data = Data() }
 }

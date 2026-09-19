@@ -8,6 +8,8 @@ struct Client: Identifiable, Codable, Equatable {
     var port = 22
     var workingDirectory = "~"
     var executable = "pi"
+    /// Optional host-side discovery root, including per-invocation --session-dir locations.
+    var sessionDirectory: String?
     var sessions: [SessionRecord] = []
 
     var address: String { isLocal ? "Local" : host + (port == 22 ? "" : ":\(port)") }
@@ -16,13 +18,18 @@ struct Client: Identifiable, Codable, Equatable {
         guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw DeskError.message("Enter a display name.")
         }
-        for value in [name, host, workingDirectory, executable] {
+        for value in [name, host, workingDirectory, executable, sessionDirectory ?? ""] {
             guard !value.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else {
                 throw DeskError.message("Connection fields cannot contain control characters.")
             }
         }
         guard workingDirectory == "~" || workingDirectory.hasPrefix("~/") || workingDirectory.hasPrefix("/") else {
             throw DeskError.message("Use an absolute working directory or a path beginning with ~/.")
+        }
+        if let directory = sessionDirectory, !directory.isEmpty {
+            guard directory == "~" || directory.hasPrefix("~/") || directory.hasPrefix("/") else {
+                throw DeskError.message("Use an absolute session directory or a path beginning with ~/.")
+            }
         }
         guard !executable.isEmpty, !executable.hasPrefix("-") else {
             throw DeskError.message("Enter a Pi executable name or full path, not command-line options.")
@@ -47,6 +54,8 @@ struct SessionRecord: Identifiable, Codable, Equatable {
     var forkFromPath: String?
     var updatedAt = Date()
     var draft = ""
+    /// Persist ambiguity across reconnect/relaunch; never silently resend this text.
+    var deliveryUnknown: String?
 
     var time: String {
         let interval = Date().timeIntervalSince(updatedAt)
@@ -89,6 +98,7 @@ struct ChatMessage: Identifiable {
     var isError = false
     var isRunning = false
     var timestamp = Date()
+    var images: [MessageImage] = []
     var isUser: Bool { role == "user" }
     var time: String { timestamp.formatted(date: .omitted, time: .shortened) }
     var toolDisplayName: String {
@@ -108,6 +118,16 @@ struct ChatMessage: Identifiable {
         if let stamp = json["timestamp"] as? Double { message.timestamp = Date(timeIntervalSince1970: stamp / 1000) }
         message.body = textContent(json["content"])
         if let blocks = json["content"] as? [JSONObject] {
+            var visibleText: [String] = []
+            for block in blocks {
+                if block["type"] as? String == "image" {
+                    if let image = MessageImage(block) { message.images.append(image) }
+                    else { visibleText.append("[Image unavailable or too large]") }
+                } else if block["type"] as? String == "text", let text = block["text"] as? String {
+                    visibleText.append(text)
+                }
+            }
+            message.body = visibleText.joined(separator: "\n")
             message.thinking = blocks.filter { $0["type"] as? String == "thinking" }.compactMap { $0["thinking"] as? String }.joined(separator: "\n\n")
             message.arguments = blocks.filter { $0["type"] as? String == "toolCall" }.map {
                 "\($0["name"] as? String ?? "tool")\n\(prettyJSON($0["arguments"]))"
@@ -132,6 +152,19 @@ struct ChatMessage: Identifiable {
     }
 }
 
+struct MessageImage: Identifiable {
+    let id = UUID()
+    let data: Data
+    let mimeType: String
+    init?(_ block: JSONObject) {
+        guard block["type"] as? String == "image",
+              let encoded = block["data"] as? String, encoded.utf8.count <= 28_000_000,
+              let data = Data(base64Encoded: encoded) else { return nil }
+        self.data = data
+        mimeType = block["mimeType"] as? String ?? "application/octet-stream"
+    }
+}
+
 /// Restores tool arguments from the assistant tool call onto its result row. Pi stores
 /// those as separate messages, while the UI intentionally renders one consolidated row.
 func parseConversationMessages(_ rawMessages: [JSONObject]) -> [ChatMessage] {
@@ -144,7 +177,7 @@ func parseConversationMessages(_ rawMessages: [JSONObject]) -> [ChatMessage] {
     }
     return rawMessages.compactMap { raw in
         guard var message = ChatMessage.parse(raw) else { return nil }
-        if message.role == "assistant", message.body.isEmpty, message.thinking.isEmpty { return nil }
+        if message.role == "assistant", message.body.isEmpty, message.thinking.isEmpty, message.images.isEmpty { return nil }
         if raw["role"] as? String == "toolResult",
            let callID = raw["toolCallId"] as? String,
            let call = calls[callID] {
@@ -177,7 +210,10 @@ func prettyJSON(_ object: Any?) -> String {
 
 enum DeskError: LocalizedError {
     case message(String)
-    var errorDescription: String? { if case .message(let text) = self { return text }; return nil }
+    case deliveryUnknown(String)
+    var errorDescription: String? {
+        switch self { case .message(let text), .deliveryUnknown(let text): return text }
+    }
 }
 
 struct ExtensionDialog: Identifiable {
@@ -223,9 +259,14 @@ struct ProcessInvocation {
 
     static func rpc(client: Client, session: SessionRecord) throws -> ProcessInvocation {
         try client.validate()
-        var command = "exec " + path(client.executable) + " --mode rpc"
+        guard let url = PiResources.bundle.url(forResource: "session-process", withExtension: "js") else {
+            throw DeskError.message("Session process helper is missing.")
+        }
+        let helper = try String(contentsOf: url, encoding: .utf8)
+        var command = "exec node -e " + quote(helper) + " -- " + path(client.executable) + " --mode rpc"
         if let source = session.forkFromPath { command += " --fork " + path(source) }
         else if let file = session.sessionPath { command += " --session " + path(file) }
+        if let directory = client.sessionDirectory, !directory.isEmpty { command += " --session-dir " + path(directory) }
         return shell(client: client, command: "cd " + path(session.workingDirectory) + " && " + command)
     }
 

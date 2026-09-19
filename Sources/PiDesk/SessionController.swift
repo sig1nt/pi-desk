@@ -32,15 +32,17 @@ final class SessionController: ObservableObject, Identifiable {
     private struct Block { var kind: String; var text = ""; var name = "" }
     private var blocks: [Int: Block] = [:]
     private var commandNames: Set<String> = []
+    private var pendingSubmission: String?
 
     init(client: Client, record: SessionRecord) { self.client = client; self.record = record; id = record.id }
-    var canSend: Bool { status == .connected && !isSubmitting && !isChangingSettings && !record.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    var canSend: Bool { status == .connected && record.deliveryUnknown == nil && !isSubmitting && !isChangingSettings && !record.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     var canConfigure: Bool { status == .connected && !isBusy && !isSubmitting && !isChangingSettings }
     var statusText: String { isBusy ? (activity.isEmpty ? "Working…" : activity) : status.rawValue }
 
     func connect() async {
         guard status != .connecting, status != .connected else { return }
         error = nil
+        clearExtensionState()
         status = .connecting
         let attempt = UUID()
         connectAttempt = attempt
@@ -93,6 +95,8 @@ final class SessionController: ObservableObject, Identifiable {
     @discardableResult
     func disconnect() -> RPCConnection? {
         connectAttempt = UUID()
+        if let text = pendingSubmission { record.deliveryUnknown = text }
+        pendingSubmission = nil
         let rpc = connection
         connection = nil
         rpc?.onEvent = nil; rpc?.onDisconnect = nil
@@ -111,8 +115,49 @@ final class SessionController: ObservableObject, Identifiable {
 
     private func resetActivity() {
         isBusy = false; isSubmitting = false; isChangingSettings = false
-        activity = ""; dialogs = []; queued = []; activeMessages = [:]; blocks = [:]
+        activity = ""; queued = []; activeMessages = [:]; blocks = [:]
+        clearExtensionState()
         for index in messages.indices { messages[index].isRunning = false }
+    }
+
+    private func clearExtensionState() {
+        dialogs = []; widgets = [:]; extensionStatus = [:]; commandNames = []
+    }
+
+    func resolveUnknownDelivery(restoreDraft: Bool) {
+        guard let text = record.deliveryUnknown else { return }
+        if restoreDraft { record.draft = text + (record.draft.isEmpty ? "" : "\n\n" + record.draft) }
+        record.deliveryUnknown = nil
+    }
+
+    /// Complete append-only Pi history, including abandoned branches and raw content blocks.
+    func exportHistory() async throws -> Data {
+        guard let rpc = connection, status == .connected else { throw DeskError.message("Connect before exporting full Pi history.") }
+        let result = try await rpc.request("get_entries", timeout: 60)
+        return try JSONSerialization.data(withJSONObject: result, options: [.prettyPrinted, .sortedKeys])
+    }
+
+    func exportMarkdown() async throws -> String {
+        let transcript: [ChatMessage]
+        if let rpc = connection, status == .connected {
+            let result = try await rpc.request("get_messages", timeout: 60)
+            transcript = parseConversationMessages(result["messages"] as? [JSONObject] ?? [])
+        } else { transcript = messages }
+        return "# " + record.title + "\n\nActive conversation only. Use Export full Pi history for all branches and raw entries.\n\n" + transcript.map { message in
+            var sections = ["## " + (message.isUser ? "You" : message.toolName ?? "Pi"), message.toolName == nil ? message.body : Self.fenced(message.body)]
+            if !message.thinking.isEmpty { sections.append("### Thinking\n\n" + message.thinking) }
+            if !message.arguments.isEmpty { sections.append("### Tool arguments\n\n" + Self.fenced(message.arguments)) }
+            for image in message.images {
+                sections.append("![Image](data:\(image.mimeType);base64,\(image.data.base64EncodedString()))")
+            }
+            return sections.joined(separator: "\n\n")
+        }.joined(separator: "\n\n")
+    }
+
+    private static func fenced(_ text: String) -> String {
+        var fence = "```"
+        while text.contains(fence) { fence += "`" }
+        return fence + "\n" + text + "\n" + fence
     }
 
     private func refreshState(_ rpc: RPCConnection) async throws {
@@ -205,17 +250,23 @@ final class SessionController: ObservableObject, Identifiable {
         error = nil
         isSubmitting = true
         record.draft = ""
-        defer { if connection === rpc { isSubmitting = false } }
+        pendingSubmission = text
+        defer { if connection === rpc { isSubmitting = false; pendingSubmission = nil } }
         do {
             _ = try await rpc.request("prompt", fields: ["message": text, "streamingBehavior": "steer"], timeout: 600)
-            guard connection === rpc else { return }
-            record.updatedAt = Date()
-            try await refreshState(rpc)
         } catch {
             guard connection === rpc else { return }
             self.error = error.localizedDescription
-            record.draft = text + (record.draft.isEmpty ? "" : "\n\n" + record.draft)
+            if case DeskError.deliveryUnknown = error { record.deliveryUnknown = text }
+            else { record.draft = text + (record.draft.isEmpty ? "" : "\n\n" + record.draft) }
+            return
         }
+        guard connection === rpc else { return }
+        pendingSubmission = nil
+        record.updatedAt = Date()
+        // Once accepted, a failed state query must never restore the sent prompt.
+        do { try await refreshState(rpc) }
+        catch { if connection === rpc { self.error = error.localizedDescription } }
     }
 
     func stop() async {
@@ -315,7 +366,7 @@ final class SessionController: ObservableObject, Identifiable {
             }
             message.isRunning = starting && message.role == "assistant"
             if starting && message.role == "assistant" { blocks = [:] }
-            if !starting, message.role == "assistant", message.body.isEmpty, message.thinking.isEmpty {
+            if !starting, message.role == "assistant", message.body.isEmpty, message.thinking.isEmpty, message.images.isEmpty {
                 messages.removeAll { $0.id == message.id }
                 return
             }
@@ -374,7 +425,11 @@ final class SessionController: ObservableObject, Identifiable {
         case "select", "confirm", "input", "editor":
             dialogs.append(ExtensionDialog(id: id, method: method, title: event["title"] as? String ?? "Pi needs your input", message: event["message"] as? String ?? "", options: event["options"] as? [String] ?? [], prefill: event["prefill"] as? String ?? "", placeholder: event["placeholder"] as? String ?? ""))
             if let timeout = event["timeout"] as? Double {
-                DispatchQueue.main.asyncAfter(deadline: .now() + timeout / 1000) { [weak self] in self?.dialogs.removeAll { $0.id == id } }
+                let attempt = connectAttempt
+                DispatchQueue.main.asyncAfter(deadline: .now() + timeout / 1000) { [weak self] in
+                    guard let self, self.connectAttempt == attempt else { return }
+                    self.dialogs.removeAll { $0.id == id }
+                }
             }
         case "set_editor_text": record.draft = event["text"] as? String ?? ""
         case "notify":
