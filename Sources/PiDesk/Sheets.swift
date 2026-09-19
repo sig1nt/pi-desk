@@ -91,13 +91,30 @@ struct SessionBrowserSheet: View {
             } else if filtered.isEmpty {
                 Text("No saved sessions found.").foregroundStyle(.secondary).frame(maxWidth: .infinity, minHeight: 260)
             } else {
-                List(filtered, selection: $selected) { session in
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(session.title).lineLimit(1)
-                        Text(session.cwd).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                        Text(session.modified.formatted()).font(.caption2).foregroundStyle(.tertiary)
-                    }.tag(session.path).padding(.vertical, 3)
-                }.frame(height: 300)
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(filtered) { session in
+                            Button {
+                                selected = session.path
+                            } label: {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(session.title).lineLimit(1)
+                                    Text(session.cwd).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                    Text(session.modified.formatted()).font(.caption2).foregroundStyle(.tertiary)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 9).padding(.vertical, 7)
+                                .contentShape(Rectangle())
+                                .background(selected == session.path ? Color.accentColor.opacity(0.16) : Color.clear, in: RoundedRectangle(cornerRadius: 6))
+                            }
+                            .buttonStyle(.plain)
+                            .padding(.horizontal, 4)
+                        }
+                    }.padding(.vertical, 4)
+                }
+                .frame(height: 300)
+                .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
             }
             Text("Close the session in other Pi clients before opening it here. PiDesk resumes its active branch; it does not attach to a running terminal process.").font(.caption).foregroundStyle(.secondary)
             HStack {
