@@ -67,11 +67,13 @@ final class SessionController: ObservableObject, Identifiable {
             try await refreshState(rpc)
             let available = try await rpc.request("get_available_models")
             guard connection === rpc else { return }
-            models = (available["models"] as? [JSONObject] ?? []).compactMap(PiModel.init)
+            let availableModels = (available["models"] as? [JSONObject] ?? []).compactMap(PiModel.init)
+            models = await discoverScopedModels(availableCount: availableModels.count)
+            guard connection === rpc else { return }
             try await refreshThinking(rpc)
             let history = try await rpc.request("get_messages")
             guard connection === rpc else { return }
-            messages = (history["messages"] as? [JSONObject] ?? []).compactMap(ChatMessage.parse)
+            messages = parseConversationMessages(history["messages"] as? [JSONObject] ?? [])
             if let commands = try? await rpc.request("get_commands") {
                 commandNames = Set((commands["commands"] as? [JSONObject] ?? []).compactMap { $0["name"] as? String })
             }
@@ -128,6 +130,42 @@ final class SessionController: ObservableObject, Identifiable {
             record.forkFromPath = nil
         }
         if let name = state["sessionName"] as? String, !name.isEmpty { record.title = name }
+    }
+
+    /// RPC exposes scoped cycling but not the scoped list. Probe an ephemeral,
+    /// no-session Pi process so enumeration follows Pi's exact pattern resolution
+    /// without appending model-change entries to the user's conversation.
+    private func discoverScopedModels(availableCount: Int) async -> [PiModel] {
+        guard availableCount > 0 else { return [] }
+        let probe = RPCConnection()
+        do {
+            try probe.start(ProcessInvocation.scopedModelProbe(client: client, workingDirectory: record.workingDirectory))
+            let state = try await probe.request("get_state", timeout: 45)
+            guard let rawInitial = state["model"] as? JSONObject, let initial = PiModel(rawInitial) else {
+                probe.stop(); await probe.waitForExit(); return []
+            }
+            if availableCount == 1 {
+                probe.stop(); await probe.waitForExit(); return [initial]
+            }
+            var scoped = [initial]
+            for _ in 0...availableCount {
+                let result = try await probe.request("cycle_model", timeout: 45)
+                guard let rawModel = result["model"] as? JSONObject, let next = PiModel(rawModel) else {
+                    // With multiple available models, no cycle result means a one-model scope.
+                    probe.stop(); await probe.waitForExit(); return [initial]
+                }
+                guard result["isScoped"] as? Bool == true else {
+                    probe.stop(); await probe.waitForExit(); return []
+                }
+                if next.id == initial.id { break }
+                if !scoped.contains(where: { $0.id == next.id }) { scoped.append(next) }
+            }
+            probe.stop(); await probe.waitForExit()
+            return scoped
+        } catch {
+            probe.stop(); await probe.waitForExit()
+            return []
+        }
     }
 
     private func refreshThinking(_ rpc: RPCConnection) async throws {
@@ -234,7 +272,7 @@ final class SessionController: ObservableObject, Identifiable {
             _ = try await rpc.request("compact", timeout: 600)
             let result = try await rpc.request("get_messages")
             guard self.connection === rpc else { return }
-            self.messages = (result["messages"] as? [JSONObject] ?? []).compactMap(ChatMessage.parse)
+            self.messages = parseConversationMessages(result["messages"] as? [JSONObject] ?? [])
             try await self.refreshState(rpc)
             await self.refreshStats(rpc)
         }
@@ -277,6 +315,10 @@ final class SessionController: ObservableObject, Identifiable {
             }
             message.isRunning = starting && message.role == "assistant"
             if starting && message.role == "assistant" { blocks = [:] }
+            if !starting, message.role == "assistant", message.body.isEmpty, message.thinking.isEmpty {
+                messages.removeAll { $0.id == message.id }
+                return
+            }
             if starting && message.isUser && record.title == "New conversation" {
                 record.title = String(message.body.prefix(64)).replacingOccurrences(of: "\n", with: " ")
             }

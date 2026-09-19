@@ -61,6 +61,12 @@ struct PiDeskTests {
         #expect(tool.toolDisplayName == "pwd")
         tool.toolName = "read"
         #expect(tool.toolDisplayName == "read")
+        let restored = parseConversationMessages([
+            ["role": "assistant", "content": [["type": "toolCall", "id": "call-1", "name": "bash", "arguments": ["command": "swift build"]]]],
+            ["role": "toolResult", "toolCallId": "call-1", "toolName": "bash", "content": [["type": "text", "text": "Done"]]]
+        ])
+        #expect(restored.count == 1)
+        #expect(restored[0].toolDisplayName == "swift build")
         let blocks = MarkdownBlock.parse("# Title\n```swift\nlet x = 1\n\n// hi\n```\nDone")
         #expect(blocks.count == 3)
         #expect(blocks[1].text == "let x = 1\n\n// hi")

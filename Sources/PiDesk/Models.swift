@@ -132,6 +132,29 @@ struct ChatMessage: Identifiable {
     }
 }
 
+/// Restores tool arguments from the assistant tool call onto its result row. Pi stores
+/// those as separate messages, while the UI intentionally renders one consolidated row.
+func parseConversationMessages(_ rawMessages: [JSONObject]) -> [ChatMessage] {
+    var calls: [String: (name: String, arguments: String)] = [:]
+    for raw in rawMessages where raw["role"] as? String == "assistant" {
+        for block in raw["content"] as? [JSONObject] ?? [] where block["type"] as? String == "toolCall" {
+            guard let id = block["id"] as? String else { continue }
+            calls[id] = (block["name"] as? String ?? "Tool", prettyJSON(block["arguments"]))
+        }
+    }
+    return rawMessages.compactMap { raw in
+        guard var message = ChatMessage.parse(raw) else { return nil }
+        if message.role == "assistant", message.body.isEmpty, message.thinking.isEmpty { return nil }
+        if raw["role"] as? String == "toolResult",
+           let callID = raw["toolCallId"] as? String,
+           let call = calls[callID] {
+            message.toolName = call.name
+            message.arguments = call.arguments
+        }
+        return message
+    }
+}
+
 typealias JSONObject = [String: Any]
 
 func textContent(_ content: Any?) -> String {
@@ -204,6 +227,12 @@ struct ProcessInvocation {
         if let source = session.forkFromPath { command += " --fork " + path(source) }
         else if let file = session.sessionPath { command += " --session " + path(file) }
         return shell(client: client, command: "cd " + path(session.workingDirectory) + " && " + command)
+    }
+
+    static func scopedModelProbe(client: Client, workingDirectory: String) throws -> ProcessInvocation {
+        try client.validate()
+        let command = "exec " + path(client.executable) + " --mode rpc --no-session"
+        return shell(client: client, command: "cd " + path(workingDirectory) + " && " + command)
     }
 
     static func shell(client: Client, command: String) -> ProcessInvocation {

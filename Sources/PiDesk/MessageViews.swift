@@ -27,9 +27,6 @@ struct MessageBubble: View {
                             if message.isUser { Text(message.body).font(.body).lineSpacing(3).textSelection(.enabled) }
                             else { MarkdownMessageView(markdown: message.body) }
                         }
-                        if !message.arguments.isEmpty {
-                            DisclosureGroup("Tool calls") { code(message.arguments) }.font(.caption)
-                        }
                         if message.isRunning && message.body.isEmpty { ProgressView().controlSize(.small) }
                     }
                 }

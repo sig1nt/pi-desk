@@ -38,6 +38,10 @@ function handle(request) {
     case 'get_commands': response(request, { commands: [{ name: 'custom', source: 'extension' }] }); break;
     case 'get_session_stats': response(request, { tokens: { total: 42 }, cost: 0.002, contextUsage: { percent: 1 } }); break;
     case 'set_model': model = { provider: request.provider, id: request.modelId, name: 'Changed' }; response(request); break;
+    case 'cycle_model':
+      model = model.id === 'one' ? { provider: 'test', id: 'two', name: 'Test Two' } : { provider: 'test', id: 'one', name: 'Test One' };
+      response(request, { model, thinkingLevel: thinking, isScoped: true });
+      break;
     case 'set_thinking_level': thinking = request.level; response(request); break;
     case 'set_session_name': name = request.name; response(request); break;
     case 'prompt':
