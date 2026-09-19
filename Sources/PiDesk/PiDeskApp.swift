@@ -1,150 +1,115 @@
 import SwiftUI
 import AppKit
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    func applicationWillFinishLaunching(_ notification: Notification) {
-        NSApp.setActivationPolicy(.regular)
-    }
-
+    weak var store: DeskStore?
+    func applicationWillFinishLaunching(_ notification: Notification) { NSApp.setActivationPolicy(.regular) }
     func applicationDidFinishLaunching(_ notification: Notification) {
         DispatchQueue.main.async {
             NSApp.activate(ignoringOtherApps: true)
             NSApp.windows.first?.makeKeyAndOrderFront(nil)
         }
     }
-
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         sender.windows.first?.makeKeyAndOrderFront(nil)
         sender.activate(ignoringOtherApps: true)
         return true
+    }
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        Task { await store?.shutdown(); sender.reply(toApplicationShouldTerminate: true) }
+        return .terminateLater
     }
 }
 
 @main
 struct PiDeskApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-
+    @StateObject private var store = DeskStore(workspaceURL: ProcessInfo.processInfo.environment["PIDESK_WORKSPACE"].map { URL(fileURLWithPath: $0) })
     var body: some Scene {
-        WindowGroup("PiDesk") {
-            ContentView()
+        Window("PiDesk", id: "main") {
+            ContentView(store: store)
                 .frame(minWidth: 1050, minHeight: 680)
+                .onAppear { appDelegate.store = store }
         }
         .windowStyle(.hiddenTitleBar)
         .windowToolbarStyle(.unifiedCompact)
         .commands {
-            CommandGroup(after: .newItem) {
-                Button("New conversation") { NotificationCenter.default.post(name: .newConversation, object: nil) }
+            CommandGroup(replacing: .newItem) {
+                Button("New conversation") { store.newConversation() }
                     .keyboardShortcut("n", modifiers: [.command, .shift])
+            }
+            CommandGroup(replacing: .appSettings) {
+                Button("Settings…") { NotificationCenter.default.post(name: .showSettings, object: nil) }
+                    .keyboardShortcut(",", modifiers: .command)
             }
         }
     }
 }
 
-extension Notification.Name {
-    static let newConversation = Notification.Name("newConversation")
-}
-
-struct Client: Identifiable, Hashable {
-    let id = UUID()
-    var name: String
-    var host: String
-    var isLocal: Bool
-    var sessions: [Session]
-}
-
-struct Session: Identifiable, Hashable {
-    let id = UUID()
-    var title: String
-    var preview: String
-    var time: String
-    var unread: Bool = false
-}
-
-struct ChatMessage: Identifiable {
-    let id = UUID()
-    let body: String
-    let isUser: Bool
-    let time: String
-}
+extension Notification.Name { static let showSettings = Notification.Name("showSettings") }
 
 struct ContentView: View {
-    @State private var clients: [Client] = [
-        Client(name: "This Mac", host: "Local", isLocal: true, sessions: [
-            Session(title: "Build a SwiftUI app", preview: "Let's add a settings screen...", time: "2m"),
-            Session(title: "Refactor networking", preview: "The RPC client now reconnects...", time: "Yesterday")
-        ]),
-        Client(name: "Studio Mac mini", host: "192.168.1.42", isLocal: false, sessions: [
-            Session(title: "Review pull request", preview: "I found two small issues...", time: "9:41 AM"),
-            Session(title: "Deploy checklist", preview: "All checks are green.", time: "Mon")
-        ]),
-        Client(name: "Build Server", host: "build.example.com", isLocal: false, sessions: [
-            Session(title: "CI diagnostics", preview: "The failing test is in...", time: "Sun")
-        ])
-    ]
-    @State private var selectedClientID: UUID?
-    @State private var selectedSessionID: UUID?
-    @State private var model = "Claude Sonnet 4"
-    @State private var thinking = "medium"
-    @State private var draft = ""
-    @State private var messages: [ChatMessage] = [
-        ChatMessage(body: "Show me the RPC connection status", isUser: true, time: "10:42 AM"),
-        ChatMessage(body: "### Connection status\n\nThe Pi client is **connected** and ready.\n\n- Host: `localhost`\n- Transport: `stdio`\n- Status: **Healthy**\n\nSee the [Pi documentation](https://github.com/badlogic/pi-mono) for RPC details.", isUser: false, time: "10:42 AM")
-    ]
-    @State private var showingAddClient = false
+    @ObservedObject var store: DeskStore
+    @State private var editingClient: Client?
+    @State private var browsingClient: Client?
+    @State private var removingClient: Client?
+    @State private var showingSettings = false
     @State private var isSidebarVisible = true
-
-    private var selectedClient: Client? { clients.first { $0.id == selectedClientID } }
-    private var selectedSession: Session? { selectedClient?.sessions.first { $0.id == selectedSessionID } }
 
     var body: some View {
         HStack(spacing: 0) {
             if isSidebarVisible {
-                Sidebar(clients: $clients, selectedClientID: $selectedClientID, selectedSessionID: $selectedSessionID, showingAddClient: $showingAddClient)
+                Sidebar(store: store, add: { editingClient = Client(name: "", isLocal: false) }, edit: { editingClient = $0 }, browse: { browsingClient = $0 }, remove: { removingClient = $0 }, settings: { showingSettings = true })
                     .frame(width: 265)
                 Divider()
             }
-            Conversation(
-                messages: $messages,
-                draft: $draft,
-                client: selectedClient,
-                session: selectedSession,
-                model: $model,
-                thinking: $thinking
-            )
+            if let controller = store.selectedController {
+                Conversation(controller: controller, new: { store.newConversation() }, browse: { browsingClient = store.selectedClient })
+                    .id(controller.id)
+            } else {
+                VStack {
+                    EmptyConversationView()
+                    Button("New conversation") { store.newConversation() }.disabled(store.selectedClient == nil)
+                    if store.clients.isEmpty { Button("Add client") { editingClient = Client(name: "This Mac") } }
+                }.frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         }
         .background(Color(nsColor: .windowBackgroundColor))
         .toolbar {
             ToolbarItem(placement: .navigation) {
                 Button {
                     withAnimation(.easeInOut(duration: 0.18)) { isSidebarVisible.toggle() }
-                } label: {
-                    Label(isSidebarVisible ? "Hide clients" : "Show clients", systemImage: "sidebar.left")
-                }
+                } label: { Label(isSidebarVisible ? "Hide clients" : "Show clients", systemImage: "sidebar.left") }
                 .help(isSidebarVisible ? "Hide clients" : "Show clients")
             }
         }
-        .onAppear {
-            selectedClientID = clients[0].id
-            selectedSessionID = clients[0].sessions[0].id
+        .onAppear { store.start() }
+        .sheet(item: $editingClient) { client in
+            ClientSheet(client: client, isEditing: store.clients.contains(where: { $0.id == client.id })) { try store.saveClient($0) }
         }
-        .sheet(isPresented: $showingAddClient) { AddClientSheet { name, host in
-            let client = Client(name: name, host: host, isLocal: false, sessions: [Session(title: "New conversation", preview: "Start chatting with Pi", time: "Now")])
-            clients.append(client); selectedClientID = client.id; selectedSessionID = client.sessions[0].id
-        }.frame(width: 420, height: 275) }
-        .onReceive(NotificationCenter.default.publisher(for: .newConversation)) { _ in
-            if let id = selectedClientID, let index = clients.firstIndex(where: {$0.id == id}) {
-                let session = Session(title: "New conversation", preview: "Start chatting with Pi", time: "Now")
-                clients[index].sessions.insert(session, at: 0); selectedSessionID = session.id; messages = []
-            }
-        }
+        .sheet(item: $browsingClient) { client in SessionBrowserSheet(client: client) { store.openSession($0, client: client) } }
+        .sheet(isPresented: $showingSettings) { SettingsSheet(store: store) }
+        .onReceive(NotificationCenter.default.publisher(for: .showSettings)) { _ in showingSettings = true }
+        .alert("Remove client?", isPresented: Binding(get: { removingClient != nil }, set: { if !$0 { removingClient = nil } })) {
+            Button("Cancel", role: .cancel) { removingClient = nil }
+            Button("Remove", role: .destructive) { if let client = removingClient { store.removeClient(client) }; removingClient = nil }
+        } message: { Text("This disconnects its conversations and removes the client from PiDesk. Pi's session files are not deleted.") }
+        .alert("PiDesk", isPresented: Binding(get: { store.error != nil }, set: { if !$0 { store.error = nil } })) {
+            Button("OK") { store.error = nil }
+        } message: { Text(store.error ?? "") }
     }
 }
 
 struct Sidebar: View {
-    @Binding var clients: [Client]
-    @Binding var selectedClientID: UUID?
-    @Binding var selectedSessionID: UUID?
-    @Binding var showingAddClient: Bool
+    @ObservedObject var store: DeskStore
+    let add: () -> Void
+    let edit: (Client) -> Void
+    let browse: (Client) -> Void
+    let remove: (Client) -> Void
+    let settings: () -> Void
+    @State private var closingSession: SessionRecord?
+    @State private var closingClient: Client?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -153,37 +118,51 @@ struct Sidebar: View {
                 Text("PiDesk").font(.system(size: 17, weight: .semibold))
                 Spacer()
             }.padding(.horizontal, 18).padding(.top, 38).padding(.bottom, 20)
-
             HStack {
                 Text("CLIENTS").font(.caption2.weight(.bold)).foregroundStyle(.secondary)
                 Spacer()
-                Button { showingAddClient = true } label: { Image(systemName: "plus") }
+                Button(action: add) { Image(systemName: "plus") }
                     .buttonStyle(.plain).foregroundStyle(.secondary).help("Add client")
             }.padding(.horizontal, 18).padding(.bottom, 8)
             ScrollView {
                 VStack(spacing: 12) {
-                    ForEach($clients) { $client in
+                    ForEach(store.clients) { client in
                         VStack(alignment: .leading, spacing: 3) {
                             HStack(spacing: 8) {
-                                Circle().fill(client.isLocal ? Color.green : Color.blue).frame(width: 8, height: 8)
-                                Text(client.name).font(.system(size: 13, weight: .medium))
-                                Spacer()
-                                Image(systemName: "ellipsis").font(.caption).foregroundStyle(.tertiary)
-                            }
-                            Text(client.host).font(.caption).foregroundStyle(.secondary).padding(.leading, 16)
-                            ForEach(client.sessions) { session in
-                                Button {
-                                    selectedClientID = client.id; selectedSessionID = session.id
-                                } label: {
+                                Button { store.select(client: client) } label: {
                                     HStack(spacing: 8) {
-                                        Image(systemName: "bubble.left").font(.caption).foregroundStyle(.secondary)
+                                        Circle().fill(statusColor(store.status(for: client), local: client.isLocal)).frame(width: 8, height: 8)
+                                        Text(client.name).font(.system(size: 13, weight: .medium)).lineLimit(1)
+                                    }
+                                }.buttonStyle(.plain).help(store.status(for: client).rawValue)
+                                Spacer()
+                                Menu {
+                                    Button("New conversation") { store.newConversation(clientID: client.id) }
+                                    Button("Open saved session…") { browse(client) }
+                                    Divider()
+                                    Button("Edit client…") { edit(client) }
+                                    Button("Disconnect") { store.disconnectClient(client) }
+                                    Button("Remove client…", role: .destructive) { remove(client) }
+                                } label: { Image(systemName: "ellipsis").font(.caption).foregroundStyle(.tertiary) }
+                                .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().help("Client actions")
+                            }
+                            Text(client.address).font(.caption).foregroundStyle(.secondary).padding(.leading, 16)
+                            ForEach(client.sessions) { session in
+                                Button { store.select(client: client, session: session) } label: {
+                                    HStack(spacing: 8) {
+                                        Image(systemName: store.isBusy(session) ? "ellipsis.bubble" : "bubble.left").font(.caption).foregroundStyle(.secondary)
                                         Text(session.title).lineLimit(1)
                                         Spacer()
                                         Text(session.time).font(.caption2).foregroundStyle(.tertiary)
                                     }
                                     .padding(.vertical, 7).padding(.horizontal, 10)
-                                    .background(selectedClientID == client.id && selectedSessionID == session.id ? Color.accentColor.opacity(0.13) : .clear, in: RoundedRectangle(cornerRadius: 7))
+                                    .background(store.selectedClientID == client.id && store.selectedSessionID == session.id ? Color.accentColor.opacity(0.13) : .clear, in: RoundedRectangle(cornerRadius: 7))
                                 }.buttonStyle(.plain).padding(.leading, 9)
+                                .contextMenu {
+                                    Button("Open conversation") { store.select(client: client, session: session) }
+                                    Button("Close conversation…") { closingSession = session; closingClient = client }
+                                }
+                                .help(session.workingDirectory)
                             }
                         }.padding(.horizontal, 14)
                     }
@@ -191,51 +170,124 @@ struct Sidebar: View {
             }
             Spacer()
             Divider()
-            HStack(spacing: 10) {
-                Image(systemName: "gearshape").foregroundStyle(.secondary)
-                Text("Settings").font(.callout)
-                Spacer()
-                Text("⌘,").font(.caption).foregroundStyle(.tertiary)
-            }.padding(16)
+            Button(action: settings) {
+                HStack(spacing: 10) {
+                    Image(systemName: "gearshape").foregroundStyle(.secondary)
+                    Text("Settings").font(.callout)
+                    Spacer()
+                    Text("⌘,").font(.caption).foregroundStyle(.tertiary)
+                }.padding(16).contentShape(Rectangle())
+            }.buttonStyle(.plain)
         }.background(Color(nsColor: .underPageBackgroundColor))
+        .alert("Close conversation?", isPresented: Binding(get: { closingSession != nil }, set: { if !$0 { closingSession = nil } })) {
+            Button("Cancel", role: .cancel) { closingSession = nil }
+            Button("Close") {
+                if let session = closingSession, let client = closingClient { store.closeConversation(session, client: client) }
+                closingSession = nil
+            }
+        } message: { Text("Any running work will stop. The Pi session stays on its host and can be reopened from Open saved session.") }
+    }
+}
+
+func statusColor(_ status: SessionController.Status, local: Bool = true) -> Color {
+    switch status {
+    case .connected: return local ? .green : .blue
+    case .connecting: return .orange
+    case .failed: return .red
+    case .disconnected: return .gray
     }
 }
 
 struct Conversation: View {
-    @Binding var messages: [ChatMessage]
-    @Binding var draft: String
-    let client: Client?
-    let session: Session?
-    @Binding var model: String
-    @Binding var thinking: String
+    @ObservedObject var controller: SessionController
+    let new: () -> Void
+    let browse: () -> Void
+    @State private var renaming = false
+    @State private var showingInfo = false
+    @State private var followBottom = true
 
     var body: some View {
         VStack(spacing: 0) {
             HStack {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(session?.title ?? "Conversation").font(.headline)
-                    HStack(spacing: 5) { Circle().fill(.green).frame(width: 7, height: 7); Text(client?.name ?? "No client selected").font(.caption).foregroundStyle(.secondary) }
+                    Text(controller.record.title).font(.headline).lineLimit(1)
+                    HStack(spacing: 5) {
+                        Circle().fill(statusColor(controller.status, local: controller.client.isLocal)).frame(width: 7, height: 7)
+                        Text("\(controller.client.name) · \(controller.statusText)").font(.caption).foregroundStyle(.secondary)
+                    }.help(controller.record.workingDirectory)
                 }
                 Spacer()
-                Button(action: {}) { Image(systemName: "ellipsis.circle") }.buttonStyle(.plain).font(.title3).foregroundStyle(.secondary)
+                if controller.status == .disconnected || controller.status == .failed {
+                    Button(controller.status == .failed ? "Reconnect" : "Connect") { Task { await controller.connect() } }.controlSize(.small)
+                }
+                Menu {
+                    Button("New conversation", action: new)
+                    Button("Open saved session…", action: browse)
+                    Button("Rename…") { renaming = true }.disabled(!controller.canConfigure)
+                    Button("Session info…") { showingInfo = true }
+                    Divider()
+                    Button("Compact context") { Task { await controller.compact() } }.disabled(!controller.canConfigure)
+                    Button("Copy last response") { copy(controller.messages.last(where: { $0.role == "assistant" })?.body ?? "") }
+                    Button("Export transcript…", action: exportTranscript).disabled(controller.messages.isEmpty)
+                    Divider()
+                    Button("Disconnect") { controller.disconnect() }.disabled(controller.status == .disconnected)
+                } label: { Image(systemName: "ellipsis.circle").font(.title3).foregroundStyle(.secondary) }
+                .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().help("Conversation actions")
             }.padding(.horizontal, 28).padding(.vertical, 17)
             Divider()
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    if messages.isEmpty { EmptyConversationView() }
-                    ForEach(messages) { message in
-                        MessageBubble(message: message)
-                    }
-                }.frame(maxWidth: 720).frame(maxWidth: .infinity, alignment: .center).padding(.top, 34).padding(.horizontal, 26)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 18) {
+                        if controller.messages.isEmpty { EmptyConversationView() }
+                        ForEach(controller.messages) { MessageBubble(message: $0) }
+                        Color.clear.frame(height: 1).id("bottom")
+                            .onAppear { followBottom = true }.onDisappear { followBottom = false }
+                    }.frame(maxWidth: 720).frame(maxWidth: .infinity, alignment: .center).padding(.top, 34).padding(.horizontal, 26)
+                }
+                .onChange(of: controller.messages.count) { _ in if followBottom { proxy.scrollTo("bottom", anchor: .bottom) } }
+                .onChange(of: controller.messages.last?.body) { _ in if followBottom { proxy.scrollTo("bottom", anchor: .bottom) } }
+                .onChange(of: controller.isSubmitting) { submitting in if submitting { followBottom = true; proxy.scrollTo("bottom", anchor: .bottom) } }
             }
-            Composer(draft: $draft, model: $model, thinking: $thinking) {
-                guard !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-                messages.append(ChatMessage(body: draft, isUser: true, time: "Now")); draft = ""
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { messages.append(ChatMessage(body: "I'm on it — connected through the Pi RPC client.", isUser: false, time: "Now")) }
+            if let error = controller.error {
+                HStack(alignment: .top) {
+                    Image(systemName: "exclamationmark.triangle").foregroundStyle(.orange)
+                    ScrollView { Text(error).font(.caption).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }.frame(maxHeight: 72)
+                    Button { controller.error = nil } label: { Image(systemName: "xmark") }.buttonStyle(.plain).help("Dismiss error")
+                }.padding(.horizontal, 28).padding(.top, 8)
+            }
+            VStack(spacing: 10) {
+                if let dialog = controller.dialogs.first {
+                    ExtensionDialogView(dialog: dialog) { value, confirmed in controller.respond(to: dialog, value: value, confirmed: confirmed) }.id(dialog.id)
+                }
+                ForEach(controller.widgets.keys.sorted(), id: \.self) { key in
+                    Text(controller.widgets[key] ?? "").font(.caption.monospaced()).frame(maxWidth: .infinity, alignment: .leading)
+                }
+                if !controller.queued.isEmpty {
+                    Text("\(controller.queued.count) queued · Stop restores queued messages to the editor").font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
+                }
+                Composer(controller: controller)
             }.padding(24)
         }.frame(maxWidth: .infinity)
+        .onExitCommand { if controller.isBusy { Task { await controller.stop() } } }
+        .sheet(isPresented: $renaming) { RenameSheet(name: controller.record.title) { name in Task { await controller.rename(name) } } }
+        .sheet(isPresented: $showingInfo) { SessionInfoSheet(controller: controller) }
+    }
+
+    private func exportTranscript() {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "conversation.md"
+        panel.begin { result in
+            guard result == .OK, let url = panel.url else { return }
+            let text = controller.messages.map { message in
+                "## \(message.isUser ? "You" : message.toolName ?? "Pi")\n\n\(message.body)"
+            }.joined(separator: "\n\n")
+            do { try text.write(to: url, atomically: true, encoding: .utf8) }
+            catch { controller.error = error.localizedDescription }
+        }
     }
 }
+
+func copy(_ text: String) { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string) }
 
 struct EmptyConversationView: View {
     var body: some View {
@@ -247,128 +299,42 @@ struct EmptyConversationView: View {
     }
 }
 
-struct MessageBubble: View {
-    let message: ChatMessage
-    var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            if message.isUser { Spacer(minLength: 40) }
-            VStack(alignment: message.isUser ? .trailing : .leading, spacing: 5) {
-                Group {
-                    if message.isUser {
-                        Text(message.body).font(.body).lineSpacing(3)
-                    } else {
-                        MarkdownMessageView(markdown: message.body)
-                    }
-                }
-                .padding(.horizontal, 15).padding(.vertical, 12)
-                .background(message.isUser ? Color.accentColor : Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 14))
-                .foregroundStyle(message.isUser ? .white : .primary)
-                Text(message.time).font(.caption2).foregroundStyle(.tertiary)
-            }
-        }.frame(maxWidth: .infinity, alignment: message.isUser ? .trailing : .leading)
-    }
-}
-
-struct MarkdownMessageView: View {
-    let markdown: String
-
-    private var lines: [String] {
-        markdown.components(separatedBy: .newlines)
-    }
-
-    private func attributed(_ text: String) -> AttributedString {
-        (try? AttributedString(markdown: text)) ?? AttributedString(text)
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
-                if line.hasPrefix("### ") {
-                    Text(attributed(String(line.dropFirst(4))))
-                        .font(.headline)
-                        .padding(.bottom, 2)
-                } else if line.hasPrefix("## ") {
-                    Text(attributed(String(line.dropFirst(3))))
-                        .font(.title3.bold())
-                        .padding(.bottom, 2)
-                } else if line.hasPrefix("# ") {
-                    Text(attributed(String(line.dropFirst(2))))
-                        .font(.title2.bold())
-                        .padding(.bottom, 2)
-                } else if line.hasPrefix("- ") || line.hasPrefix("* ") {
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text("•")
-                        Text(attributed(String(line.dropFirst(2))))
-                            .textSelection(.enabled)
-                    }
-                } else if line.isEmpty {
-                    Spacer().frame(height: 2)
-                } else {
-                    Text(attributed(line))
-                        .lineSpacing(3)
-                        .textSelection(.enabled)
-                }
-            }
-        }
-        .font(.body)
-        .fixedSize(horizontal: false, vertical: true)
-    }
-}
-
 struct Composer: View {
-    @Binding var draft: String
-    @Binding var model: String
-    @Binding var thinking: String
-    let send: () -> Void
-
+    @ObservedObject var controller: SessionController
     var body: some View {
         VStack(spacing: 10) {
             HStack(alignment: .bottom, spacing: 10) {
-                TextField("Message Pi…", text: $draft, axis: .vertical).textFieldStyle(.plain).lineLimit(1...5).frame(minHeight: 32).onSubmit(send)
-                Button(action: send) { Image(systemName: "arrow.up").font(.system(size: 13, weight: .bold)).foregroundStyle(.white).frame(width: 32, height: 32).background(Color.accentColor, in: Circle()) }.buttonStyle(.plain)
+                TextField(controller.isBusy ? "Steer Pi…" : "Message Pi…", text: $controller.record.draft, axis: .vertical)
+                    .textFieldStyle(.plain).lineLimit(1...5).frame(minHeight: 32)
+                    .onSubmit { Task { await controller.send() } }
+                if controller.isBusy || controller.isSubmitting {
+                    Button { Task { await controller.stop() } } label: {
+                        Image(systemName: "stop.fill").font(.system(size: 12, weight: .bold)).frame(width: 32, height: 32)
+                    }.buttonStyle(.plain).help("Stop and restore queued messages (Escape)")
+                }
+                Button { Task { await controller.send() } } label: {
+                    Image(systemName: "arrow.up").font(.system(size: 13, weight: .bold)).foregroundStyle(.white).frame(width: 32, height: 32).background(controller.canSend ? Color.accentColor : Color.gray.opacity(0.4), in: Circle())
+                }.buttonStyle(.plain).disabled(!controller.canSend).keyboardShortcut(.return, modifiers: .command)
+                    .help(controller.isBusy ? "Queue a steering message" : "Send message (⌘Return)")
             }
             .padding(12)
             .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 13))
             .overlay(RoundedRectangle(cornerRadius: 13).stroke(.quaternary))
-
             HStack(spacing: 12) {
+                Text(controller.extensionStatus.values.sorted().joined(separator: " · ")).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                 Spacer()
-                Picker("Model", selection: $model) {
-                    Text("Claude Sonnet 4").tag("Claude Sonnet 4")
-                    Text("GPT-4.1").tag("GPT-4.1")
-                    Text("o3").tag("o3")
-                }
-                .labelsHidden()
-                .help("Model")
-                .fixedSize()
-
-                Picker("Thinking", selection: $thinking) {
-                    Text("Off").tag("off")
-                    Text("Minimal").tag("minimal")
-                    Text("Low").tag("low")
-                    Text("Medium").tag("medium")
-                    Text("High").tag("high")
-                    Text("Extra High").tag("xhigh")
-                    Text("Maximum").tag("max")
-                }
-                .labelsHidden()
-                .help("Thinking level")
-                .fixedSize()
+                Picker("Model", selection: Binding(get: { controller.modelID }, set: { id in Task { await controller.setModel(id) } })) {
+                    if !controller.models.contains(where: { $0.id == controller.modelID }) {
+                        Text(controller.modelID.isEmpty ? "No model" : controller.modelID).tag(controller.modelID)
+                    }
+                    ForEach(controller.models) { Text("\($0.name) · \($0.provider)").tag($0.id) }
+                }.labelsHidden().help("Model").frame(maxWidth: 280).fixedSize(horizontal: false, vertical: true)
+                Picker("Thinking", selection: Binding(get: { controller.thinking }, set: { level in Task { await controller.setThinking(level) } })) {
+                    ForEach(controller.thinkingLevels, id: \.self) { Text($0.capitalized).tag($0) }
+                }.labelsHidden().help("Thinking level").fixedSize()
             }
-            .pickerStyle(.menu)
-            .buttonStyle(.borderless)
-            .menuIndicator(.hidden)
-            .controlSize(.small)
+            .disabled(!controller.canConfigure)
+            .pickerStyle(.menu).buttonStyle(.borderless).menuIndicator(.hidden).controlSize(.small)
         }
-    }
-}
-
-struct AddClientSheet: View {
-    @Environment(\.dismiss) private var dismiss
-    @State private var name = ""
-    @State private var host = ""
-    let onAdd: (String, String) -> Void
-    var body: some View {
-        VStack(alignment: .leading, spacing: 18) { Text("Connect a Pi client").font(.title2.bold()); Text("Add a local or remote Pi instance over RPC.").foregroundStyle(.secondary); TextField("Display name", text: $name); TextField("Host or SSH address", text: $host); Spacer(); HStack { Spacer(); Button("Cancel") { dismiss() }; Button("Connect") { onAdd(name.isEmpty ? "New client" : name, host.isEmpty ? "localhost" : host); dismiss() }.keyboardShortcut(.defaultAction).buttonStyle(.borderedProminent) } }.padding(26)
     }
 }

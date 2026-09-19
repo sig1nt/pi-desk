@@ -1,0 +1,88 @@
+import Foundation
+import Testing
+@testable import PiDesk
+
+struct PiDeskTests {
+    @Test func strictJSONLFramingAcrossEveryByte() throws {
+        var decoder = JSONLDecoder()
+        let text = "Hello 🌍\u{2028}still one record\u{2029}!"
+        var data = try JSONSerialization.data(withJSONObject: ["type": "event", "text": text], options: [.withoutEscapingSlashes])
+        data.append(contentsOf: [13, 10])
+        var records: [JSONObject] = []
+        for byte in data { records += try decoder.append(Data([byte])) }
+        #expect(records.count == 1)
+        #expect(records[0]["text"] as? String == text)
+        #expect(try decoder.append(Data("\n{\"type\":\"next\"}\n".utf8)).count == 1)
+    }
+
+    @Test func invalidJSONIsReported() {
+        var decoder = JSONLDecoder()
+        #expect(throws: (any Error).self) { try decoder.append(Data("shell startup noise\n".utf8)) }
+    }
+
+    @Test func sshValidationAndQuoting() throws {
+        var client = Client(name: "Remote", host: "dev@build-host", isLocal: false, port: 2222)
+        try client.validate()
+        let record = SessionRecord(workingDirectory: "~/project's $(touch /tmp/should-not-exist)", sessionPath: "/tmp/a b.jsonl")
+        let invocation = try ProcessInvocation.rpc(client: client, session: record)
+        #expect(invocation.executable == "/usr/bin/ssh")
+        #expect(invocation.arguments.contains("StrictHostKeyChecking=yes"))
+        #expect(invocation.arguments.contains("BatchMode=yes"))
+        #expect(invocation.arguments.contains("dev@build-host"))
+        #expect(ProcessInvocation.quote("a'b") == "'a'\\''b'")
+        #expect(ProcessInvocation.path("~/a b") == "\"$HOME\"/'a b'")
+        for host in ["-oProxyCommand=evil", "host;echo bad", "a\nb", "ssh://host", "host -p 22"] {
+            client.host = host
+            #expect(throws: (any Error).self) { try client.validate() }
+        }
+        client.host = "user@[::1]"; try client.validate()
+        client.port = 0
+        #expect(throws: (any Error).self) { try client.validate() }
+    }
+
+    @Test func messageParsingAndCodeFences() {
+        let message = ChatMessage.parse(["role": "assistant", "content": [
+            ["type": "thinking", "thinking": "Reasoning"], ["type": "text", "text": "Hello"],
+            ["type": "toolCall", "name": "bash", "arguments": ["command": "pwd"]]
+        ], "stopReason": "error", "errorMessage": "Quota exceeded"])!
+        #expect(message.thinking == "Reasoning")
+        #expect(message.body.contains("Quota exceeded"))
+        #expect(message.isError)
+        #expect(message.arguments.contains("pwd"))
+        let blocks = MarkdownBlock.parse("# Title\n```swift\nlet x = 1\n\n// hi\n```\nDone")
+        #expect(blocks.count == 3)
+        #expect(blocks[1].text == "let x = 1\n\n// hi")
+        #expect(blocks[1].isCode)
+        #expect(MarkdownBlock.parse("```\npartial")[0].isCode)
+    }
+
+    @Test @MainActor func workspacePersistenceAndIsolation() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("workspace.json")
+        let store = DeskStore(workspaceURL: url)
+        let first = store.selectedController!
+        first.record.draft = "Unsent draft"
+        first.record.title = "My work"
+        store.connectOnLaunch = false
+        store.save()
+        let restored = DeskStore(workspaceURL: url)
+        #expect(restored.selectedController?.record.draft == "Unsent draft")
+        #expect(restored.selectedController?.record.title == "My work")
+        #expect(!restored.connectOnLaunch)
+        let remote = Client(name: "Remote", host: "server", isLocal: false)
+        let second = restored.controller(for: SessionRecord(workingDirectory: "/project"), client: remote)
+        #expect(second.record.draft.isEmpty)
+        #expect(first.record.draft == "Unsent draft")
+    }
+
+    @Test @MainActor func corruptWorkspaceIsNotOverwritten() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: url) }
+        try Data("broken".utf8).write(to: url)
+        let store = DeskStore(workspaceURL: url)
+        #expect(store.error != nil)
+        store.save()
+        #expect(try String(contentsOf: url) == "broken")
+    }
+}
