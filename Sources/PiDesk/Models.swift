@@ -152,6 +152,13 @@ struct ChatMessage: Identifiable {
     }
 }
 
+struct PendingImage: Identifiable {
+    let id = UUID()
+    let data: Data
+    let mimeType: String
+    let name: String
+}
+
 struct MessageImage: Identifiable {
     let id = UUID()
     let data: Data

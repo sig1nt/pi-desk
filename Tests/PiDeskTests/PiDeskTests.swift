@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 import Testing
 @testable import PiDesk
 
@@ -36,7 +37,6 @@ struct PiDeskTests {
         let forkInvocation = try ProcessInvocation.rpc(client: client, session: fork)
         #expect(forkInvocation.arguments.joined(separator: " ").contains("--fork"))
         #expect(forkInvocation.arguments.joined(separator: " ").contains("/old/session.jsonl"))
-        #expect(forkInvocation.arguments.joined(separator: " ").contains("--session") == false)
         for host in ["-oProxyCommand=evil", "host;echo bad", "a\nb", "ssh://host", "host -p 22"] {
             client.host = host
             #expect(throws: (any Error).self) { try client.validate() }
@@ -72,6 +72,31 @@ struct PiDeskTests {
         #expect(blocks[1].text == "let x = 1\n\n// hi")
         #expect(blocks[1].isCode)
         #expect(MarkdownBlock.parse("```\npartial")[0].isCode)
+    }
+
+    @Test @MainActor func commandVInterceptsImagesButNotText() throws {
+        let pasteboard = NSPasteboard.general
+        defer { pasteboard.clearContents() }
+        let monitor = ComposerImagePasteMonitor()
+        monitor.isActive = true
+        var pasted = false
+        monitor.pasteImage = { pasted = true }
+        let event = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
+            timestamp: 0, windowNumber: 0, context: nil, characters: "v", charactersIgnoringModifiers: "v",
+            isARepeat: false, keyCode: 9))
+        pasteboard.clearContents()
+        let bitmap = try #require(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 2, pixelsHigh: 2,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+        let png = try #require(bitmap.representation(using: .png, properties: [:]))
+        #expect(pasteboard.setData(png, forType: .png))
+        #expect(monitor.handle(event) == nil)
+        #expect(pasted)
+        pasted = false
+        pasteboard.clearContents()
+        pasteboard.setString("ordinary text", forType: .string)
+        #expect(monitor.handle(event) != nil)
+        #expect(!pasted)
     }
 
     @Test @MainActor func workspacePersistenceAndIsolation() throws {

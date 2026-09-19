@@ -31,6 +31,7 @@ These are **advisory PiDesk locks**: terminal Pi and other applications do not h
 
 - Local stdio and remote SSH RPC transports, real connection status and errors.
 - Independent conversations, streaming text/thinking, expandable tool calls/results.
+- Paste images with ⌘V (or the image button), preview/remove them before sending, and render image messages in the transcript.
 - Model and supported thinking-level selection from Pi's actual catalog.
 - Steering messages during generation; Stop/Escape clears and restores queued messages before aborting.
 - New conversations, rename, context compaction, session info/usage, copy, Markdown transcript export including thinking, tool arguments/results, and supported inline images. **Export full Pi history** saves raw entries from all branches as JSON (not an importable Pi JSONL session).

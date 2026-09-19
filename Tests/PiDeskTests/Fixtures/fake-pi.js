@@ -10,8 +10,9 @@ const emit = value => process.stdout.write(JSON.stringify(value) + '\n');
 const response = (request, data = {}, error) => emit({ type: 'response', id: request.id, command: request.type, success: !error, data, error });
 const message = (role, content) => ({ role, content, timestamp: Date.now() });
 function settled() { busy = false; emit({ type: 'agent_end', willRetry: false }); emit({ type: 'agent_settled' }); }
-function complete(text) {
-  const user = message('user', text);
+function complete(text, images = []) {
+  const content = images.length ? [{ type: 'text', text }, ...images] : text;
+  const user = message('user', content);
   history.push(user);
   emit({ type: 'message_start', message: user }); emit({ type: 'message_end', message: user });
   emit({ type: 'message_start', message: message('assistant', []) });
@@ -61,7 +62,7 @@ function handle(request) {
         break;
       }
       if (request.message === 'dialog') { emit({ type: 'extension_ui_request', id: 'permission', method: 'confirm', title: 'Allow?' }); break; }
-      setTimeout(() => complete(request.message), 15);
+      setTimeout(() => complete(request.message, request.images || []), 15);
       break;
     case 'compact':
       busy = true; emit({ type: 'compaction_start', reason: 'manual' });

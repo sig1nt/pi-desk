@@ -340,23 +340,97 @@ struct EmptyConversationView: View {
     }
 }
 
+@MainActor
+final class ComposerImagePasteMonitor: ObservableObject {
+    var isActive = false
+    var pasteImage: (() -> Void)?
+    private var token: Any?
+
+    func start() {
+        guard token == nil else { return }
+        token = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            self?.handle(event) ?? event
+        }
+    }
+
+    func stop() {
+        if let token { NSEvent.removeMonitor(token) }
+        token = nil
+        isActive = false
+    }
+
+    func handle(_ event: NSEvent) -> NSEvent? {
+        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard isActive, modifiers.contains(.command), !modifiers.contains(.option), !modifiers.contains(.control),
+              event.charactersIgnoringModifiers?.lowercased() == "v",
+              NSPasteboard.general.canReadObject(forClasses: [NSImage.self], options: nil) else { return event }
+        pasteImage?()
+        return nil
+    }
+
+    deinit { if let token { NSEvent.removeMonitor(token) } }
+}
+
+private struct PendingImageView: View {
+    let image: PendingImage
+    let remove: () -> Void
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            Group {
+                if let preview = NSImage(data: image.data) {
+                    Image(nsImage: preview).resizable().scaledToFill()
+                } else {
+                    Image(systemName: "photo").foregroundStyle(.secondary)
+                }
+            }
+            .frame(width: 68, height: 54).clipped()
+            .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 7))
+            .clipShape(RoundedRectangle(cornerRadius: 7))
+            Button(action: remove) {
+                Image(systemName: "xmark.circle.fill").symbolRenderingMode(.palette)
+                    .foregroundStyle(.white, .black.opacity(0.65))
+            }
+            .buttonStyle(.plain).offset(x: 5, y: -5).help("Remove image")
+        }
+        .padding(.top, 4).padding(.trailing, 4)
+        .help("\(image.name) · \(ByteCountFormatter.string(fromByteCount: Int64(image.data.count), countStyle: .file))")
+    }
+}
+
 struct Composer: View {
     @ObservedObject var controller: SessionController
+    @StateObject private var imagePasteMonitor = ComposerImagePasteMonitor()
+    @FocusState private var editorFocused: Bool
     var body: some View {
         VStack(spacing: 10) {
-            HStack(alignment: .bottom, spacing: 10) {
-                TextField(controller.isBusy ? "Steer Pi…" : "Message Pi…", text: $controller.record.draft, axis: .vertical)
-                    .textFieldStyle(.plain).lineLimit(1...5).frame(minHeight: 32)
-                    .onSubmit { Task { await controller.send() } }
-                if controller.isBusy || controller.isSubmitting {
-                    Button { Task { await controller.stop() } } label: {
-                        Image(systemName: "stop.fill").font(.system(size: 12, weight: .bold)).frame(width: 32, height: 32)
-                    }.buttonStyle(.plain).help("Stop and restore queued messages (Escape)")
+            VStack(alignment: .leading, spacing: 9) {
+                if !controller.pendingImages.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(controller.pendingImages) { image in
+                                PendingImageView(image: image) { controller.removePendingImage(image.id) }
+                            }
+                        }
+                    }
                 }
-                Button { Task { await controller.send() } } label: {
-                    Image(systemName: "arrow.up").font(.system(size: 13, weight: .bold)).foregroundStyle(.white).frame(width: 32, height: 32).background(controller.canSend ? Color.accentColor : Color.gray.opacity(0.4), in: Circle())
-                }.buttonStyle(.plain).disabled(!controller.canSend).keyboardShortcut(.return, modifiers: .command)
-                    .help(controller.isBusy ? "Queue a steering message" : "Send message (⌘Return)")
+                HStack(alignment: .bottom, spacing: 10) {
+                    Button { controller.pasteImagesFromClipboard() } label: {
+                        Image(systemName: "photo.on.rectangle").frame(width: 26, height: 32)
+                    }.buttonStyle(.plain).foregroundStyle(.secondary).help("Paste image from clipboard (⌘V)")
+                    TextField(controller.isBusy ? "Steer Pi…" : "Message Pi…", text: $controller.record.draft, axis: .vertical)
+                        .textFieldStyle(.plain).lineLimit(1...5).frame(minHeight: 32)
+                        .focused($editorFocused)
+                        .onSubmit { Task { await controller.send() } }
+                    if controller.isBusy || controller.isSubmitting {
+                        Button { Task { await controller.stop() } } label: {
+                            Image(systemName: "stop.fill").font(.system(size: 12, weight: .bold)).frame(width: 32, height: 32)
+                        }.buttonStyle(.plain).help("Stop and restore queued messages (Escape)")
+                    }
+                    Button { Task { await controller.send() } } label: {
+                        Image(systemName: "arrow.up").font(.system(size: 13, weight: .bold)).foregroundStyle(.white).frame(width: 32, height: 32).background(controller.canSend ? Color.accentColor : Color.gray.opacity(0.4), in: Circle())
+                    }.buttonStyle(.plain).disabled(!controller.canSend).keyboardShortcut(.return, modifiers: .command)
+                        .help(controller.isBusy ? "Queue a steering message" : "Send message (⌘Return)")
+                }
             }
             .padding(12)
             .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 13))
@@ -377,5 +451,11 @@ struct Composer: View {
             .disabled(!controller.canConfigure)
             .pickerStyle(.menu).buttonStyle(.borderless).menuIndicator(.hidden).controlSize(.small)
         }
+        .onAppear {
+            imagePasteMonitor.pasteImage = { [weak controller] in controller?.pasteImagesFromClipboard() }
+            imagePasteMonitor.start()
+        }
+        .onDisappear { imagePasteMonitor.stop() }
+        .onChange(of: editorFocused) { focused in imagePasteMonitor.isActive = focused }
     }
 }

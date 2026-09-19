@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import AppKit
 
 @MainActor
 final class SessionController: ObservableObject, Identifiable {
@@ -22,6 +23,7 @@ final class SessionController: ObservableObject, Identifiable {
     @Published private(set) var dialogs: [ExtensionDialog] = []
     @Published private(set) var extensionStatus: [String: String] = [:]
     @Published private(set) var widgets: [String: String] = [:]
+    @Published private(set) var pendingImages: [PendingImage] = []
     @Published var error: String?
     var onRecordChange: ((SessionRecord) -> Void)?
     private var connection: RPCConnection?
@@ -32,10 +34,12 @@ final class SessionController: ObservableObject, Identifiable {
     private struct Block { var kind: String; var text = ""; var name = "" }
     private var blocks: [Int: Block] = [:]
     private var commandNames: Set<String> = []
-    private var pendingSubmission: String?
+    private struct Submission { let text: String; let images: [PendingImage] }
+    private var pendingSubmission: Submission?
+    private var unknownDeliveryImageIDs: Set<UUID> = []
 
     init(client: Client, record: SessionRecord) { self.client = client; self.record = record; id = record.id }
-    var canSend: Bool { status == .connected && record.deliveryUnknown == nil && !isSubmitting && !isChangingSettings && !record.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    var canSend: Bool { status == .connected && record.deliveryUnknown == nil && !isSubmitting && !isChangingSettings && (!record.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !pendingImages.isEmpty) }
     var canConfigure: Bool { status == .connected && !isBusy && !isSubmitting && !isChangingSettings }
     var statusText: String { isBusy ? (activity.isEmpty ? "Working…" : activity) : status.rawValue }
 
@@ -95,7 +99,10 @@ final class SessionController: ObservableObject, Identifiable {
     @discardableResult
     func disconnect() -> RPCConnection? {
         connectAttempt = UUID()
-        if let text = pendingSubmission { record.deliveryUnknown = text }
+        if let submission = pendingSubmission {
+            record.deliveryUnknown = submission.text
+            restoreImages(submission.images, deliveryUnknown: true)
+        }
         pendingSubmission = nil
         let rpc = connection
         connection = nil
@@ -126,8 +133,54 @@ final class SessionController: ObservableObject, Identifiable {
 
     func resolveUnknownDelivery(restoreDraft: Bool) {
         guard let text = record.deliveryUnknown else { return }
-        if restoreDraft { record.draft = text + (record.draft.isEmpty ? "" : "\n\n" + record.draft) }
+        if restoreDraft, !text.isEmpty {
+            record.draft = text + (record.draft.isEmpty ? "" : "\n\n" + record.draft)
+        } else if !restoreDraft {
+            pendingImages.removeAll { unknownDeliveryImageIDs.contains($0.id) }
+        }
+        unknownDeliveryImageIDs = []
         record.deliveryUnknown = nil
+    }
+
+    func pasteImagesFromClipboard() {
+        error = nil
+        let objects = NSPasteboard.general.readObjects(forClasses: [NSImage.self], options: nil) as? [NSImage] ?? []
+        guard !objects.isEmpty else {
+            error = "The clipboard does not contain an image."
+            return
+        }
+        var added = 0
+        for image in objects {
+            guard let tiff = image.tiffRepresentation,
+                  let bitmap = NSBitmapImageRep(data: tiff),
+                  let png = bitmap.representation(using: .png, properties: [:]) else { continue }
+            if attachImage(data: png, mimeType: "image/png", name: "Pasted image \(pendingImages.count + 1)") { added += 1 }
+        }
+        if added == 0, error == nil { error = "The clipboard image could not be decoded." }
+    }
+
+    @discardableResult
+    func attachImage(data: Data, mimeType: String, name: String) -> Bool {
+        guard pendingImages.count < 8 else {
+            error = "You can attach up to 8 images to one message."
+            return false
+        }
+        guard data.count <= 20 * 1024 * 1024,
+              pendingImages.reduce(0, { $0 + $1.data.count }) + data.count <= 40 * 1024 * 1024 else {
+            error = "Pasted images are limited to 20 MB each and 40 MB total."
+            return false
+        }
+        pendingImages.append(PendingImage(data: data, mimeType: mimeType, name: name))
+        return true
+    }
+
+    func removePendingImage(_ id: UUID) { pendingImages.removeAll { $0.id == id } }
+
+    private func restoreImages(_ images: [PendingImage], deliveryUnknown: Bool = false) {
+        let existing = Set(pendingImages.map(\.id))
+        let restored = images.filter { !existing.contains($0.id) }
+        pendingImages = restored + pendingImages
+        if deliveryUnknown { unknownDeliveryImageIDs.formUnion(images.map(\.id)) }
     }
 
     /// Complete append-only Pi history, including abandoned branches and raw content blocks.
@@ -249,16 +302,26 @@ final class SessionController: ObservableObject, Identifiable {
         }
         error = nil
         isSubmitting = true
+        let submission = Submission(text: text, images: pendingImages)
         record.draft = ""
-        pendingSubmission = text
+        pendingImages = []
+        pendingSubmission = submission
         defer { if connection === rpc { isSubmitting = false; pendingSubmission = nil } }
+        let rpcImages: [JSONObject] = submission.images.map {
+            ["type": "image", "data": $0.data.base64EncodedString(), "mimeType": $0.mimeType]
+        }
         do {
-            _ = try await rpc.request("prompt", fields: ["message": text, "streamingBehavior": "steer"], timeout: 600)
+            _ = try await rpc.request("prompt", fields: ["message": text, "images": rpcImages, "streamingBehavior": "steer"], timeout: 600)
         } catch {
             guard connection === rpc else { return }
             self.error = error.localizedDescription
-            if case DeskError.deliveryUnknown = error { record.deliveryUnknown = text }
-            else { record.draft = text + (record.draft.isEmpty ? "" : "\n\n" + record.draft) }
+            if case DeskError.deliveryUnknown = error {
+                restoreImages(submission.images, deliveryUnknown: true)
+                record.deliveryUnknown = text
+            } else {
+                restoreImages(submission.images)
+                if !text.isEmpty { record.draft = text + (record.draft.isEmpty ? "" : "\n\n" + record.draft) }
+            }
             return
         }
         guard connection === rpc else { return }
@@ -371,7 +434,8 @@ final class SessionController: ObservableObject, Identifiable {
                 return
             }
             if starting && message.isUser && record.title == "New conversation" {
-                record.title = String(message.body.prefix(64)).replacingOccurrences(of: "\n", with: " ")
+                let title = String(message.body.prefix(64)).replacingOccurrences(of: "\n", with: " ")
+                record.title = title.isEmpty && !message.images.isEmpty ? "Image conversation" : title
             }
             upsert(message)
         case "message_update": updateStream(event)

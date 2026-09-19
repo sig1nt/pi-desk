@@ -39,7 +39,7 @@ Main files:
 ## Not implemented / scope boundaries
 
 - Attaching to an already-running Pi TUI or durable remote/background sessions.
-- Session tree navigation, branching/fork/clone UI, file/image attachments, provider login inside the GUI.
+- Session tree navigation, branching/fork/clone UI, general file attachments, provider login inside the GUI. Clipboard image attachments are supported.
 - Automatic reconnect/replay: reconnect is explicit to avoid replaying prompts or silently restarting tools.
 - A replacement for all terminal slash commands: common TUI-only commands are blocked with guidance; extension/skill/template commands pass through to Pi.
 

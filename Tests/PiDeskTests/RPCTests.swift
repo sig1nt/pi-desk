@@ -72,12 +72,15 @@ struct RPCTests {
         #expect(session.modelID == "test/two")
         #expect(session.thinking == "high")
         session.record.draft = "hello"
+        #expect(session.attachImage(data: Data([0x89, 0x50, 0x4e, 0x47]), mimeType: "image/png", name: "test.png"))
         await session.send()
         try await eventually { session.messages.count == 3 }
         #expect(session.isBusy, "agent_end must not settle a run that can retry")
         try await eventually { !session.isBusy }
         try #require(session.messages.count == 3, "Tool result events must not duplicate the tool row")
         #expect(session.messages[0].body == "hello")
+        #expect(session.messages[0].images.count == 1)
+        #expect(session.pendingImages.isEmpty)
         #expect(session.messages[1].body == "Authoritative final text")
         #expect(session.messages[1].thinking == "Some reasoning")
         #expect(session.messages[2].arguments.contains("pwd"))
@@ -131,10 +134,13 @@ struct RPCTests {
         let session = try controller()
         await session.connect()
         session.record.draft = "reject"
+        #expect(session.attachImage(data: Data([1, 2, 3]), mimeType: "image/png", name: "restore.png"))
         await session.send()
         #expect(session.error == "Rejected prompt")
         #expect(session.record.draft == "reject")
+        #expect(session.pendingImages.count == 1)
         #expect(session.messages.isEmpty)
+        if let image = session.pendingImages.first { session.removePendingImage(image.id) }
         session.record.draft = "hold"
         await session.send()
         try await eventually { session.isBusy }
