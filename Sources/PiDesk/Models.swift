@@ -102,13 +102,20 @@ struct ChatMessage: Identifiable {
     var isUser: Bool { role == "user" }
     var time: String { timestamp.formatted(date: .omitted, time: .shortened) }
     var toolDisplayName: String {
-        guard toolName == "bash" else { return toolName ?? "Tool" }
-        if let data = arguments.data(using: .utf8),
-           let object = try? JSONSerialization.jsonObject(with: data) as? JSONObject,
-           let command = object["command"] as? String,
-           !command.isEmpty { return command }
-        let command = arguments.trimmingCharacters(in: .whitespacesAndNewlines)
-        return command.isEmpty ? "bash" : command
+        let name = toolName ?? "Tool"
+        let object: JSONObject? = arguments.data(using: .utf8).flatMap {
+            try? JSONSerialization.jsonObject(with: $0) as? JSONObject
+        }
+        if name == "bash" {
+            if let command = object?["command"] as? String, !command.isEmpty { return command }
+            let command = arguments.trimmingCharacters(in: .whitespacesAndNewlines)
+            return command.isEmpty ? "bash" : command
+        }
+        if ["read", "write", "edit"].contains(name),
+           let path = object?["path"] as? String, !path.isEmpty {
+            return "\(name) · \(path)"
+        }
+        return name
     }
 
     static func parse(_ json: JSONObject) -> ChatMessage? {

@@ -60,7 +60,12 @@ struct PiDeskTests {
         tool.arguments = "pwd"
         #expect(tool.toolDisplayName == "pwd")
         tool.toolName = "read"
-        #expect(tool.toolDisplayName == "read")
+        tool.arguments = "{\"path\":\"/tmp/project/Models.swift\"}"
+        #expect(tool.toolDisplayName == "read · /tmp/project/Models.swift")
+        tool.toolName = "write"
+        #expect(tool.toolDisplayName == "write · /tmp/project/Models.swift")
+        tool.toolName = "edit"
+        #expect(tool.toolDisplayName == "edit · /tmp/project/Models.swift")
         let restored = parseConversationMessages([
             ["role": "assistant", "content": [["type": "toolCall", "id": "call-1", "name": "bash", "arguments": ["command": "swift build"]]]],
             ["role": "toolResult", "toolCallId": "call-1", "toolName": "bash", "content": [["type": "text", "text": "Done"]]]
