@@ -62,7 +62,7 @@ final class RPCConnection {
         }
     }
 
-    func request(_ type: String, fields: JSONObject = [:], timeout: TimeInterval = 30) async throws -> JSONObject {
+    func request(_ type: String, fields: JSONObject = [:], timeout: TimeInterval = 30) async throws -> sending JSONObject {
         guard isRunning else { throw DeskError.message("Pi is not connected.") }
         let id = UUID().uuidString
         var command = fields
@@ -85,8 +85,9 @@ final class RPCConnection {
         guard isRunning, let input else { throw DeskError.message("Pi is not connected.") }
         var data = try JSONSerialization.data(withJSONObject: object, options: [.fragmentsAllowed])
         data.append(0x0A)
+        let payload = data
         writer.async { [weak self] in
-            do { try input.write(contentsOf: data) }
+            do { try input.write(contentsOf: payload) }
             catch { DispatchQueue.main.async { self?.fail("Could not write to Pi: \(error.localizedDescription)") } }
         }
     }
@@ -109,7 +110,7 @@ final class RPCConnection {
         }
     }
 
-    private func finish(id: String, result: Result<JSONObject, Error>) {
+    private func finish(id: String, result: sending Result<JSONObject, Error>) {
         guard let (continuation, expiry, _) = pending.removeValue(forKey: id) else { return }
         expiry.cancel()
         continuation.resume(with: result)

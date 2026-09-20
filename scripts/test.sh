@@ -1,6 +1,10 @@
 #!/bin/bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# SwiftUI's macro plugin is shipped with Xcode, not the standalone CLT.
+if [[ -z "${DEVELOPER_DIR:-}" && -d /Applications/Xcode.app/Contents/Developer ]]; then
+  export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+fi
 # Recent CLT releases ship Swift Testing but SwiftPM may omit its framework/rpaths.
 # Keep this workaround out of the application target and do not change xcode-select.
 developer="$(xcode-select -p)"

@@ -324,7 +324,7 @@ struct Conversation: View {
 }
 
 private struct TranscriptFrameKey: PreferenceKey {
-    static var defaultValue: CGRect = .zero
+    static let defaultValue: CGRect = .zero
     static func reduce(value: inout CGRect, nextValue: () -> CGRect) { value = nextValue() }
 }
 
@@ -373,7 +373,7 @@ final class ComposerImagePasteMonitor: ObservableObject {
         return nil
     }
 
-    deinit { if let token { NSEvent.removeMonitor(token) } }
+    isolated deinit { if let token { NSEvent.removeMonitor(token) } }
 }
 
 private struct PendingImageView: View {
@@ -479,7 +479,7 @@ struct Composer: View {
             .disabled(!controller.canConfigure)
             .pickerStyle(.menu).buttonStyle(.borderless).menuIndicator(.hidden).controlSize(.small)
         }
-        .onAppear {
+        .onAppear { [controller] in
             imagePasteMonitor.pasteImage = { [weak controller] in controller?.pasteImagesFromClipboard() }
             imagePasteMonitor.completeSuggestion = { [weak controller] in
                 guard let controller, let suggestion = controller.composerSuggestions.first else { return false }

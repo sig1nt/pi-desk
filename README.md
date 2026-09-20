@@ -4,7 +4,7 @@ Native macOS SwiftUI frontend for local Pi and Pi running on remote SSH hosts. T
 
 ## Run
 
-Requires macOS 13+, a current Pi installation, and Node.js on each client host. Building requires Swift 5.9+; the tests use Swift Testing (Swift 6+).
+Requires macOS 13+, a current Pi installation, and Node.js on each client host. Building requires Swift 6.4+ and Xcode (SwiftUI's macro plugin is not included in the standalone Command Line Tools).
 
 ```sh
 swift run PiDesk
@@ -66,7 +66,7 @@ PIDESK_TEST_REAL_PI=1 scripts/test.sh --filter realPiHandshakeWithoutModelCalls
 swift build
 ```
 
-The test script handles the Swift Testing framework paths omitted by some Command Line Tools installations, without changing `xcode-select`. A macOS 13 deployment-target warning from the macOS 14+ test framework is expected on the current toolchain; it does not affect the application build.
+The test script handles the Swift Testing framework paths omitted by some Command Line Tools installations, without changing `xcode-select`. A macOS 13 deployment-target warning from the test framework is expected on newer toolchains; it does not affect the application build.
 
 Tests cover framing/Unicode, RPC correlation/errors/timeouts/exits, streamed message assembly, tool deduplication, model/thinking controls, queue restoration, extension confirmations, session isolation, reconnect, compaction, quoting, and workspace persistence. The opt-in real-Pi test performs protocol queries only—no model/API call.
 
