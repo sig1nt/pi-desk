@@ -359,7 +359,16 @@ final class SessionController: ObservableObject, Identifiable {
             ["type": "image", "data": $0.data.base64EncodedString(), "mimeType": $0.mimeType]
         }
         do {
-            _ = try await rpc.request("prompt", fields: ["message": text, "images": rpcImages, "streamingBehavior": "steer"], timeout: 600)
+            let result = try await rpc.request("prompt", fields: ["message": text, "images": rpcImages, "streamingBehavior": "steer"], timeout: 600)
+            // Pi 1.1 reports whether input started a run, was queued, or was handled
+            // synchronously by an extension. Events, rather than this response, remain
+            // authoritative for busy state and completion.
+            if let disposition = result["disposition"] as? String,
+               !["started", "queued", "handled"].contains(disposition) {
+                // The prompt was already accepted, so report a protocol warning without
+                // restoring it to the draft and risking a duplicate submission.
+                self.error = "Pi returned an unknown prompt disposition: \(disposition)"
+            }
         } catch {
             guard connection === rpc else { return }
             self.error = error.localizedDescription
@@ -456,6 +465,7 @@ final class SessionController: ObservableObject, Identifiable {
         if let index = messages.firstIndex(where: { $0.id == message.id }) {
             var replacement = message
             if replacement.arguments.isEmpty { replacement.arguments = messages[index].arguments }
+            if replacement.durationMS == nil { replacement.durationMS = messages[index].durationMS }
             messages[index] = replacement
         } else { messages.append(message) }
     }
@@ -468,6 +478,10 @@ final class SessionController: ObservableObject, Identifiable {
         case "agent_start": isBusy = true; activity = "Working…"
         case "agent_settled":
             isBusy = false; activity = ""
+            if event["aborted"] as? Bool == true {
+                activeMessages = [:]; blocks = [:]
+                for index in messages.indices { messages[index].isRunning = false }
+            }
             record.updatedAt = Date()
             if let rpc = connection { Task { try? await refreshState(rpc); await refreshStats(rpc) } }
         case "message_start", "message_end":
@@ -499,6 +513,7 @@ final class SessionController: ObservableObject, Identifiable {
             if let result { message.body = textContent(result["content"]) }
             message.isRunning = event["type"] as? String != "tool_execution_end"
             message.isError = event["isError"] as? Bool == true
+            if let duration = event["durationMs"] as? NSNumber { message.durationMS = duration.doubleValue }
             activity = message.isRunning ? "Running \(message.toolName ?? "tool")…" : "Working…"
             upsert(message)
         case "queue_update": queued = (event["steering"] as? [String] ?? []) + (event["followUp"] as? [String] ?? [])

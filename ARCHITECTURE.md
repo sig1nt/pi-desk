@@ -158,7 +158,7 @@ On send:
 2. PiDesk handles `/compact` and `/name` through their RPC equivalents. Known terminal-only commands are rejected with guidance unless Pi reported an extension command with that name.
 3. Draft text and pending images are moved into an in-flight `Submission`; images are base64-encoded content blocks.
 4. A `prompt` request is sent with `streamingBehavior: "steer"`. If Pi is already busy, Pi can queue it as a steering message.
-5. Queue events update the composer status. Prompt acceptance updates the record timestamp and refreshes Pi state.
+5. Pi 1.1's prompt response disposition (`started`, `queued`, or `handled`) is validated. Queue/events—not the acceptance response—remain authoritative for run state. Prompt acceptance updates the record timestamp and refreshes Pi state.
 
 Clipboard images are converted to PNG. The controller permits at most eight images, 20 MB each and 40 MB total. Transcript image blocks are decoded into bounded thumbnails off the main thread.
 
@@ -180,12 +180,12 @@ The reducer handles:
 - agent start/settled and retry/compaction activity;
 - message start/update/end events;
 - assistant text, thinking, and tool-call blocks keyed by `contentIndex` so interleaved deltas retain their order;
-- tool start/update/end events consolidated into one row per `toolCallId`;
+- tool start/update/end events consolidated into one row per `toolCallId`, including Pi 1.1's final `durationMs`;
 - steering/follow-up queue updates;
 - final message replacement without losing tool arguments;
 - errors, notifications, statuses, widgets, and extension requests.
 
-After the agent settles, state and usage statistics are refreshed. Initial and post-compaction history is rebuilt from `get_messages`; assistant tool calls are joined to separate tool-result messages for a single UI row.
+After the agent settles (including Pi 1.1's `aborted` settlement field), state and usage statistics are refreshed. Initial and post-compaction history is rebuilt from `get_messages`; assistant tool calls are joined to separate tool-result messages for a single UI row.
 
 The transcript uses a lazy stack and geometry-driven follow-bottom behavior. Changes in streaming text, tools, disclosures, and thumbnails can alter row geometry. The current implementation's full-frame preference and synchronous `scrollTo` feedback risk is documented in [`docs/scroll-to-layout-loop.md`](docs/scroll-to-layout-loop.md); changes to scrolling should preserve user intent and keep geometry observation out of a synchronous layout loop.
 

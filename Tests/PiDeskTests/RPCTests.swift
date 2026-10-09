@@ -85,6 +85,8 @@ struct RPCTests {
         #expect(session.messages[1].thinking == "Some reasoning")
         #expect(session.messages[2].arguments.contains("pwd"))
         #expect(session.messages[2].body == "tool output")
+        #expect(session.messages[2].durationMS == 1234)
+        #expect(session.messages[2].toolStatus == "Done · 1.2s")
         #expect(session.record.draft.isEmpty)
         if let rpc = session.disconnect() { await rpc.waitForExit() }
     }
@@ -98,6 +100,7 @@ struct RPCTests {
         #expect(session.messages.last?.thinking == "Reason")
         #expect(session.isBusy)
         await session.stop()
+        #expect(session.messages.last?.isRunning == false, "Pi 1.1's aborted settlement must end partial-message activity")
         if let rpc = session.disconnect() { await rpc.waitForExit() }
     }
 

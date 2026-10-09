@@ -9,7 +9,7 @@ const sessionFile = sessionArgument >= 0 ? process.argv[sessionArgument + 1] : `
 const emit = value => process.stdout.write(JSON.stringify(value) + '\n');
 const response = (request, data = {}, error) => emit({ type: 'response', id: request.id, command: request.type, success: !error, data, error });
 const message = (role, content) => ({ role, content, timestamp: Date.now() });
-function settled() { busy = false; emit({ type: 'agent_end', willRetry: false }); emit({ type: 'agent_settled' }); }
+function settled(aborted = false) { busy = false; emit({ type: 'agent_end', willRetry: false }); emit({ type: 'agent_settled', aborted }); }
 function complete(text, images = []) {
   const content = images.length ? [{ type: 'text', text }, ...images] : text;
   const user = message('user', content);
@@ -26,7 +26,7 @@ function complete(text, images = []) {
   const result = { content: [{ type: 'text', text: 'tool output' }] };
   emit({ type: 'tool_execution_start', toolCallId: 'call-1', toolName: 'bash', args: { command: 'pwd' } });
   emit({ type: 'tool_execution_update', toolCallId: 'call-1', partialResult: result });
-  emit({ type: 'tool_execution_end', toolCallId: 'call-1', result, isError: false });
+  emit({ type: 'tool_execution_end', toolCallId: 'call-1', result, isError: false, durationMs: 1234 });
   const tool = { ...message('toolResult', result.content), toolCallId: 'call-1', toolName: 'bash' };
   history.push(tool);
   emit({ type: 'message_start', message: tool }); emit({ type: 'message_end', message: tool });
@@ -50,8 +50,12 @@ function handle(request) {
     case 'set_session_name': name = request.name; response(request); break;
     case 'prompt':
       if (request.message === 'reject') { response(request, {}, 'Rejected prompt'); break; }
-      response(request);
-      if (busy) { queue.push(request.message); emit({ type: 'queue_update', steering: queue, followUp: [] }); break; }
+      if (busy) {
+        response(request, { disposition: 'queued' });
+        queue.push(request.message); emit({ type: 'queue_update', steering: queue, followUp: [] }); break;
+      }
+      response(request, { disposition: request.message === '/handled' ? 'handled' : 'started' });
+      if (request.message === '/handled') break;
       busy = true; emit({ type: 'agent_start' });
       if (request.message === 'hold') break;
       if (request.message === 'stream-only') {
@@ -69,7 +73,7 @@ function handle(request) {
       setTimeout(() => { busy = false; emit({ type: 'compaction_end', reason: 'manual' }); response(request, { summary: 'Compacted' }); }, 10);
       break;
     case 'clear_queue': response(request, { steering: queue, followUp: [] }); queue = []; emit({ type: 'queue_update', steering: [], followUp: [] }); break;
-    case 'abort': settled(); response(request); break;
+    case 'abort': settled(true); response(request); break;
     case 'extension_ui_response': emit({ type: 'extension_ui_request', id: 'notice', method: 'notify', message: request.confirmed ? 'Allowed' : 'Denied' }); settled(); break;
     case 'echo': setTimeout(() => response(request, { value: request.value }), request.delay || 0); break;
     case 'fail': response(request, {}, 'Expected failure'); break;

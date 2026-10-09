@@ -4,7 +4,7 @@ Native macOS SwiftUI frontend for local Pi and Pi running on remote SSH hosts. T
 
 ## Run
 
-Requires macOS 13+, a current Pi installation, and Node.js on each client host. Building requires Swift 6.4+ and Xcode (SwiftUI's macro plugin is not included in the standalone Command Line Tools).
+Requires macOS 13+, Pi 1.1.0 or newer, and Node.js 22.19 or newer on each client host. PiDesk uses Pi 1.1's RPC protocol directly; Pi remains an external installation rather than a Swift package dependency. Building requires Swift 6.4+ and Xcode (SwiftUI's macro plugin is not included in the standalone Command Line Tools).
 
 ```sh
 swift run PiDesk
@@ -30,7 +30,7 @@ These are **advisory PiDesk locks**: terminal Pi and other applications do not h
 ## Implemented
 
 - Local stdio and remote SSH RPC transports, real connection status and errors.
-- Independent conversations, streaming text/thinking, expandable tool calls/results.
+- Independent conversations, streaming text/thinking, expandable tool calls/results, and Pi 1.1 tool-duration reporting.
 - Paste images with ⌘V (or the image button), preview/remove them before sending, and render image messages in the transcript.
 - Model and supported thinking-level selection from Pi's actual catalog.
 - Composer completion for `@` project paths on the connected local/SSH client and for extension, prompt-template, and skill slash commands reported by that Pi RPC session.
@@ -68,6 +68,6 @@ swift build
 
 The test script handles the Swift Testing framework paths omitted by some Command Line Tools installations, without changing `xcode-select`. A macOS 13 deployment-target warning from the test framework is expected on newer toolchains; it does not affect the application build.
 
-Tests cover framing/Unicode, RPC correlation/errors/timeouts/exits, streamed message assembly, tool deduplication, model/thinking controls, queue restoration, extension confirmations, session isolation, reconnect, compaction, quoting, and workspace persistence. The opt-in real-Pi test performs protocol queries only—no model/API call.
+Tests cover framing/Unicode, RPC correlation/errors/timeouts/exits, Pi 1.1 prompt dispositions and lifecycle fields, streamed message assembly, tool deduplication/durations, model/thinking controls, queue restoration, extension confirmations, session isolation, reconnect, compaction, quoting, and workspace persistence. The opt-in real-Pi test performs protocol queries only—no model/API call.
 
 See [TODO.md](TODO.md) for remaining work and verification gaps.

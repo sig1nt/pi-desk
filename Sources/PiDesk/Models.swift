@@ -214,10 +214,19 @@ struct ChatMessage: Identifiable {
     var arguments = ""
     var isError = false
     var isRunning = false
+    /// Pi 1.1 records monotonic tool execution time on live completion events.
+    var durationMS: Double?
     var timestamp = Date()
     var images: [MessageImage] = []
     var isUser: Bool { role == "user" }
     var time: String { timestamp.formatted(date: .omitted, time: .shortened) }
+    var toolStatus: String {
+        if isRunning { return "Running…" }
+        let status = isError ? "Failed" : "Done"
+        guard let durationMS else { return status }
+        let duration = durationMS / 1000
+        return duration < 10 ? status + String(format: " · %.1fs", duration) : status + String(format: " · %.0fs", duration)
+    }
     var toolDisplayName: String {
         let name = toolName ?? "Tool"
         let object: JSONObject? = arguments.data(using: .utf8).flatMap {

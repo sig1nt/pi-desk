@@ -17,12 +17,20 @@ struct MessageBubble: View {
                                 if message.isRunning { ProgressView().controlSize(.mini) }
                                 Image(systemName: message.isError ? "exclamationmark.triangle" : "terminal")
                                 Text(message.toolDisplayName).font(.callout.monospaced()).lineLimit(2)
-                                Text(message.isRunning ? "Running…" : message.isError ? "Failed" : "Done").font(.caption).foregroundStyle(.secondary)
+                                Text(message.toolStatus).font(.caption).foregroundStyle(.secondary)
                             }
                         }
                     } else {
                         if !message.thinking.isEmpty {
-                            DisclosureGroup("Thinking") { MarkdownMessageView(markdown: message.thinking).foregroundStyle(.secondary) }.font(.caption)
+                            DisclosureGroup {
+                                MarkdownMessageView(markdown: message.thinking)
+                                    .foregroundStyle(.secondary)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            } label: {
+                                Text("Thinking").frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .font(.caption)
                         }
                         if !message.body.isEmpty {
                             if message.isUser { Text(message.body).font(.body).lineSpacing(3).textSelection(.enabled) }
