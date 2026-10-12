@@ -206,8 +206,14 @@ struct Conversation: View {
     @State private var renaming = false
     @State private var showingInfo = false
     @State private var followBottom = true
+    @State private var isNearBottom = true
     @State private var transcriptHeight: CGFloat = 0
+    @State private var evaluatedTranscriptHeight: CGFloat = 0
+    @State private var bottomY: CGFloat = .infinity
     @State private var viewportHeight: CGFloat = 0
+    @State private var evaluatedViewportHeight: CGFloat = 0
+    @State private var measurementReconcileScheduled = false
+    @State private var followScrollScheduled = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -245,30 +251,39 @@ struct Conversation: View {
                         LazyVStack(alignment: .leading, spacing: 18) {
                             if controller.messages.isEmpty { EmptyConversationView() }
                             ForEach(controller.messages) { MessageBubble(message: $0) }
-                            Color.clear.frame(height: 1).id("bottom")
+                            Color.clear.frame(height: 1)
+                                .background(GeometryReader { geometry in
+                                    Color.clear.preference(key: TranscriptBottomKey.self, value: geometry.frame(in: .named("transcript")).maxY)
+                                })
+                                .id("bottom")
                         }.frame(maxWidth: 720).frame(maxWidth: .infinity, alignment: .center).padding(.top, 34).padding(.horizontal, 26)
                             .background(GeometryReader { geometry in
-                                Color.clear.preference(key: TranscriptFrameKey.self, value: geometry.frame(in: .named("transcript")))
+                                Color.clear.preference(key: TranscriptContentHeightKey.self, value: geometry.size.height)
                             })
                     }
                     .coordinateSpace(name: "transcript")
-                    .onPreferenceChange(TranscriptFrameKey.self) { frame in
-                        let resized = abs(frame.height - transcriptHeight) > 0.5 || abs(viewport.size.height - viewportHeight) > 0.5
-                        transcriptHeight = frame.height; viewportHeight = viewport.size.height
-                        if resized {
-                            // Layout growth (including thinking/tools/images) must not look like the user scrolling up.
-                            if followBottom { proxy.scrollTo("bottom", anchor: .bottom) }
-                        } else { followBottom = frame.maxY <= viewport.size.height + 60 }
+                    .onPreferenceChange(TranscriptContentHeightKey.self) { height in
+                        guard abs(height - transcriptHeight) > 0.5 else { return }
+                        transcriptHeight = height
+                        scheduleMeasurementReconciliation(proxy, viewportHeight: viewport.size.height)
+                    }
+                    .onPreferenceChange(TranscriptBottomKey.self) { y in
+                        guard abs(y - bottomY) > 0.5 else { return }
+                        bottomY = y
+                        scheduleMeasurementReconciliation(proxy, viewportHeight: viewport.size.height)
+                    }
+                    .onChange(of: viewport.size.height) { height in
+                        scheduleMeasurementReconciliation(proxy, viewportHeight: height)
                     }
                     .overlay(alignment: .bottomTrailing) {
                         if !followBottom {
-                            Button { followBottom = true; proxy.scrollTo("bottom", anchor: .bottom) } label: {
+                            Button { resumeFollowing(proxy) } label: {
                                 Image(systemName: "arrow.down.to.line").padding(8)
                             }.help("Jump to latest message").padding(12)
                         }
                     }
                 }
-                .onChange(of: controller.isSubmitting) { submitting in if submitting { followBottom = true; proxy.scrollTo("bottom", anchor: .bottom) } }
+                .onChange(of: controller.isSubmitting) { submitting in if submitting { resumeFollowing(proxy) } }
             }
             if let error = controller.error {
                 HStack(alignment: .top) {
@@ -306,6 +321,46 @@ struct Conversation: View {
         .sheet(isPresented: $showingInfo) { SessionInfoSheet(controller: controller) }
     }
 
+    private func scheduleMeasurementReconciliation(_ proxy: ScrollViewProxy, viewportHeight height: CGFloat) {
+        if abs(height - viewportHeight) > 0.5 { viewportHeight = height }
+        guard !measurementReconcileScheduled else { return }
+        measurementReconcileScheduled = true
+        DispatchQueue.main.async {
+            measurementReconcileScheduled = false
+            let heightChanged = abs(transcriptHeight - evaluatedTranscriptHeight) > 0.5
+            let viewportChanged = abs(viewportHeight - evaluatedViewportHeight) > 0.5
+            let grew = transcriptHeight > evaluatedTranscriptHeight
+            if heightChanged { evaluatedTranscriptHeight = transcriptHeight }
+            if viewportChanged { evaluatedViewportHeight = viewportHeight }
+
+            let nearBottom = bottomY <= viewportHeight + 60
+            if nearBottom != isNearBottom { isNearBottom = nearBottom }
+
+            if heightChanged || viewportChanged {
+                // Content growth and resizing move the marker without the user scrolling. Keep
+                // following, but move the scroll view on a later, coalesced run-loop turn.
+                if (grew || viewportChanged) && followBottom { scheduleFollowScroll(proxy) }
+            } else if followBottom != nearBottom {
+                followBottom = nearBottom
+            }
+        }
+    }
+
+    private func scheduleFollowScroll(_ proxy: ScrollViewProxy) {
+        guard followBottom, !followScrollScheduled else { return }
+        followScrollScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0 / 30.0) {
+            followScrollScheduled = false
+            guard followBottom else { return }
+            proxy.scrollTo("bottom", anchor: .bottom)
+        }
+    }
+
+    private func resumeFollowing(_ proxy: ScrollViewProxy) {
+        followBottom = true
+        scheduleFollowScroll(proxy)
+    }
+
     private func exportTranscript(fullHistory: Bool) {
         let panel = NSSavePanel()
         panel.nameFieldStringValue = fullHistory ? "pi-history.json" : "conversation.md"
@@ -323,9 +378,14 @@ struct Conversation: View {
     }
 }
 
-private struct TranscriptFrameKey: PreferenceKey {
-    static let defaultValue: CGRect = .zero
-    static func reduce(value: inout CGRect, nextValue: () -> CGRect) { value = nextValue() }
+private struct TranscriptContentHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
+private struct TranscriptBottomKey: PreferenceKey {
+    static let defaultValue: CGFloat = .infinity
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
 }
 
 func copy(_ text: String) { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string) }

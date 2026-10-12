@@ -2,11 +2,11 @@
 
 ## Summary
 
-PiDesk can appear to freeze while an agent is streaming even though the underlying `pi --mode rpc` process is still working. The failure is in the transcript UI: geometry observation and programmatic scrolling form a positive feedback loop that keeps the SwiftUI main thread busy.
+PiDesk could appear to freeze while an agent was streaming even though the underlying `pi --mode rpc` process was still working. The failure was in the transcript UI: geometry observation and programmatic scrolling formed a positive feedback loop that kept the SwiftUI main thread busy.
 
-The vulnerable implementation is in `Conversation` in `Sources/PiDesk/PiDeskApp.swift`. It measures the frame of the complete transcript with a `GeometryReader` and `TranscriptFrameKey`; `onPreferenceChange` then calls `ScrollViewProxy.scrollTo` when the measured height changes.
+The vulnerable implementation was in `Conversation` in `Sources/PiDesk/PiDeskApp.swift`. It measured the frame of the complete transcript with a `GeometryReader` and `TranscriptFrameKey`; `onPreferenceChange` then called `ScrollViewProxy.scrollTo` when the measured height changed.
 
-This document records the observed failure and the required design for the fix.
+The fix is implemented using separate scalar content-height and bottom-marker preferences, deferred measurement reconciliation, and a coalesced 30 Hz follow scroll. This document records the incident and the design constraints that prevent regressions.
 
 ## Symptoms
 

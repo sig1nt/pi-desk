@@ -187,7 +187,7 @@ The reducer handles:
 
 After the agent settles (including Pi 1.1's `aborted` settlement field), state and usage statistics are refreshed. Initial and post-compaction history is rebuilt from `get_messages`; assistant tool calls are joined to separate tool-result messages for a single UI row.
 
-The transcript uses a lazy stack and geometry-driven follow-bottom behavior. Changes in streaming text, tools, disclosures, and thumbnails can alter row geometry. The current implementation's full-frame preference and synchronous `scrollTo` feedback risk is documented in [`docs/scroll-to-layout-loop.md`](docs/scroll-to-layout-loop.md); changes to scrolling should preserve user intent and keep geometry observation out of a synchronous layout loop.
+The transcript uses a lazy stack and geometry-driven follow-bottom behavior. Changes in streaming text, tools, disclosures, and thumbnails can alter row geometry. Separate scalar preferences track content height and the bottom marker, while follow-scroll requests are deferred and coalesced to avoid the feedback loop documented in [`docs/scroll-to-layout-loop.md`](docs/scroll-to-layout-loop.md). Scrolling away disables following until the user returns to the bottom, uses the jump control, or submits a message.
 
 ### 5. Stop and queue restoration
 
