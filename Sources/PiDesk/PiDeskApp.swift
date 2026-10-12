@@ -37,6 +37,8 @@ struct PiDeskApp: App {
         .commands {
             CommandGroup(replacing: .newItem) {
                 Button("New conversation") { store.newConversation() }
+                    .keyboardShortcut("n", modifiers: .command)
+                Button("New client…") { NotificationCenter.default.post(name: .showNewClient, object: nil) }
                     .keyboardShortcut("n", modifiers: [.command, .shift])
             }
             CommandGroup(replacing: .appSettings) {
@@ -47,7 +49,10 @@ struct PiDeskApp: App {
     }
 }
 
-extension Notification.Name { static let showSettings = Notification.Name("showSettings") }
+extension Notification.Name {
+    static let showSettings = Notification.Name("showSettings")
+    static let showNewClient = Notification.Name("showNewClient")
+}
 
 struct ContentView: View {
     @ObservedObject var store: DeskStore
@@ -91,6 +96,7 @@ struct ContentView: View {
         .sheet(item: $browsingClient) { client in SessionBrowserSheet(client: client) { store.openSession($0, client: client) } }
         .sheet(isPresented: $showingSettings) { SettingsSheet(store: store) }
         .onReceive(NotificationCenter.default.publisher(for: .showSettings)) { _ in showingSettings = true }
+        .onReceive(NotificationCenter.default.publisher(for: .showNewClient)) { _ in editingClient = Client(name: "", isLocal: false) }
         .alert("Remove client?", isPresented: Binding(get: { removingClient != nil }, set: { if !$0 { removingClient = nil } })) {
             Button("Cancel", role: .cancel) { removingClient = nil }
             Button("Remove", role: .destructive) { if let client = removingClient { store.removeClient(client) }; removingClient = nil }
