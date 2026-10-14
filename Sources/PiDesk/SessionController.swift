@@ -17,6 +17,7 @@ final class SessionController: ObservableObject, Identifiable {
     @Published private(set) var isBusy = false
     @Published private(set) var isSubmitting = false
     @Published private(set) var isChangingSettings = false
+    @Published private(set) var isForking = false
     @Published private(set) var activity = ""
     @Published private(set) var queued: [String] = []
     @Published private(set) var statistics = ""
@@ -43,6 +44,7 @@ final class SessionController: ObservableObject, Identifiable {
 
     init(client: Client, record: SessionRecord) { self.client = client; self.record = record; id = record.id }
     var canSend: Bool { status == .connected && record.deliveryUnknown == nil && !isSubmitting && !isChangingSettings && (!record.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !pendingImages.isEmpty) }
+    var canFork: Bool { canConfigure && !isForking && record.deliveryUnknown == nil && record.sessionPath != nil && !messages.isEmpty }
     var canConfigure: Bool { status == .connected && !isBusy && !isSubmitting && !isChangingSettings }
     var statusText: String { isBusy ? (activity.isEmpty ? "Working…" : activity) : status.rawValue }
     var composerSuggestions: [ComposerSuggestion] {
@@ -130,6 +132,41 @@ final class SessionController: ObservableObject, Identifiable {
         status = .disconnected
         resetActivity()
         return rpc ?? retiringConnection
+    }
+
+    /// `clone` preserves the current leaf; `fork` instead rewinds to a user message.
+    func forkConversation() async throws -> SessionRecord? {
+        guard canFork, let rpc = connection else { return nil }
+        let original = record
+        isForking = true
+        isChangingSettings = true
+        defer {
+            isForking = false
+            if connection === rpc { isChangingSettings = false }
+        }
+        do {
+            let result = try await rpc.request("clone", timeout: 600)
+            guard connection === rpc else { return nil }
+            guard result["cancelled"] as? Bool != true else { return nil }
+            let state = try await rpc.request("get_state")
+            guard connection === rpc else { return nil }
+            guard let path = state["sessionFile"] as? String, !path.isEmpty, path != original.sessionPath else {
+                throw DeskError.message("Pi did not return a new session path after cloning.")
+            }
+            let fork = SessionRecord(title: state["sessionName"] as? String ?? original.title,
+                                     workingDirectory: original.workingDirectory, sessionPath: path)
+            // Clone switches the running process to the new file. Retire it and
+            // release both host-side locks before opening the new conversation.
+            disconnect()
+            await rpc.waitForExit()
+            return fork
+        } catch {
+            // A failed/unknown response may still have switched Pi's session.
+            // Never allow subsequent prompts to silently modify the wrong file.
+            if connection === rpc { disconnect() }
+            await rpc.waitForExit()
+            throw error
+        }
     }
 
     func reconfigure(_ client: Client, record: SessionRecord) {
@@ -261,7 +298,7 @@ final class SessionController: ObservableObject, Identifiable {
     private func refreshState(_ rpc: RPCConnection) async throws {
         let revision = activityRevision
         let state = try await rpc.request("get_state", timeout: 45)
-        guard connection === rpc else { return }
+        guard connection === rpc, !isForking else { return }
         if let model = state["model"] as? JSONObject, let parsed = PiModel(model) { modelID = parsed.id }
         else { modelID = "" }
         thinking = state["thinkingLevel"] as? String ?? "off"

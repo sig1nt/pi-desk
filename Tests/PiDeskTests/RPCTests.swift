@@ -26,6 +26,36 @@ struct RPCTests {
         #expect(predicate(), "Timed out waiting for RPC event")
     }
 
+    @Test func forkPreservesOriginalAndHonorsCancellation() async throws {
+        let session = try controller()
+        defer { session.disconnect() }
+        #expect(!session.canFork)
+        await session.connect()
+        #expect(!session.canFork)
+        session.record.draft = "hello"
+        await session.send()
+        #expect(!session.canFork)
+        try await eventually { !session.isBusy && !session.messages.isEmpty }
+        let originalPath = session.record.sessionPath
+        let originalID = session.id
+        session.record.draft = "Keep this draft"
+        await session.rename("cancel-clone")
+        #expect(try await session.forkConversation() == nil)
+        #expect(session.status == .connected)
+        #expect(session.canFork)
+        #expect(session.record.sessionPath == originalPath)
+        await session.rename("My conversation")
+        let fork = try #require(try await session.forkConversation())
+        #expect(fork.id != originalID)
+        #expect(fork.sessionPath?.hasPrefix("/tmp/fake-clone-") == true)
+        #expect(fork.title == "My conversation")
+        #expect(fork.draft.isEmpty)
+        #expect(session.record.sessionPath == originalPath)
+        #expect(session.record.draft == "Keep this draft")
+        #expect(session.status == .disconnected)
+        #expect(!session.isForking)
+    }
+
     @Test func correlatedOutOfOrderResponsesAndTimeouts() async throws {
         let rpc = try peer()
         defer { rpc.stop() }

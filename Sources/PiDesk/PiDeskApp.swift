@@ -38,8 +38,13 @@ struct PiDeskApp: App {
             CommandGroup(replacing: .newItem) {
                 Button("New conversation") { store.newConversation() }
                     .keyboardShortcut("n", modifiers: .command)
+                Button("Fork conversation") { Task { await store.forkSelectedConversation() } }
+                    .keyboardShortcut("n", modifiers: [.command, .control])
+                    .disabled(store.selectedController?.canFork != true)
                 Button("New client…") { NotificationCenter.default.post(name: .showNewClient, object: nil) }
                     .keyboardShortcut("n", modifiers: [.command, .shift])
+                Button("Close conversation") { store.closeSelectedConversation() }
+                    .keyboardShortcut("w", modifiers: .command)
             }
             CommandGroup(replacing: .appSettings) {
                 Button("Settings…") { NotificationCenter.default.post(name: .showSettings, object: nil) }

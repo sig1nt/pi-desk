@@ -44,7 +44,7 @@ These are **advisory PiDesk locks**: terminal Pi and other applications do not h
 - Common Markdown tables, nested/ordered/task lists, headings, quotes, and code fences; supported embedded image blocks render as bounded thumbnails without fetching remote images. This is not a full CommonMark/HTML/footnote renderer.
 - Transient extension dialogs/widgets/statuses reset when disconnecting/reconnecting.
 
-**⌘N** creates a conversation; **⌘⇧N** opens the new client dialog; **⌘Return** sends; **⌘,** opens Settings. Type **@** for connected-project paths or **/** for available Pi commands, then click a completion or press **Tab**. Client and conversation menus expose additional actions.
+**⌘N** creates a conversation; **⌘⇧N** opens the new client dialog; **⌘W** closes the current conversation; **⌘Return** sends; **⌘,** opens Settings. Type **@** for connected-project paths or **/** for available Pi commands, then click a completion or press **Tab**. Client and conversation menus expose additional actions.
 
 Pi can execute tools with the permissions of the host account. PiDesk does not add a sandbox or automatically approve project trust. Disconnecting or quitting stops the GUI-owned processes; remote jobs are not a durable background service.
 

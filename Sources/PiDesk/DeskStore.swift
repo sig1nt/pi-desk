@@ -95,6 +95,26 @@ final class DeskStore: ObservableObject {
         select(client: clients[index], session: session)
     }
 
+    func forkSelectedConversation() async {
+        guard let client = selectedClient, let source = selectedController, source.canFork else { return }
+        do {
+            guard let fork = try await source.forkConversation(),
+                  let index = clients.firstIndex(where: { $0.id == client.id }),
+                  clients[index].sessions.contains(where: { $0.id == source.id }) else { return }
+            clients[index].sessions.insert(fork, at: 0)
+            select(client: clients[index], session: fork)
+            save()
+        } catch {
+            self.error = "Could not fork conversation: \(error.localizedDescription)"
+        }
+    }
+
+    func closeSelectedConversation() {
+        guard let client = selectedClient,
+              let session = client.sessions.first(where: { $0.id == selectedSessionID }) else { return }
+        closeConversation(session, client: client)
+    }
+
     func saveClient(_ client: Client) throws {
         try client.validate()
         if let index = clients.firstIndex(where: { $0.id == client.id }) {
