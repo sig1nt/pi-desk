@@ -79,6 +79,23 @@ struct PiDeskTests {
         #expect(MarkdownBlock.parse("```\npartial")[0].isCode)
     }
 
+    @Test func systemMessagesAreNotDisplayed() throws {
+        let system: JSONObject = ["role": "system", "content": "", "sections": ["preamble": "Model instructions"]]
+        #expect(ChatMessage.parse(system) == nil)
+        #expect(ChatMessage.parse(["role": "system", "content": "Plain-text instructions"]) == nil)
+        #expect(parseConversationMessages([system]).isEmpty)
+
+        let messages = parseConversationMessages([
+            system,
+            ["role": "user", "content": "Hello"],
+            ["role": "assistant", "content": "Hi"]
+        ])
+        try #require(messages.count == 2)
+        #expect(messages[0].isUser)
+        #expect(messages[0].body == "Hello")
+        #expect(messages[1].body == "Hi")
+    }
+
     @Test @MainActor func commandVInterceptsImagesButNotText() throws {
         let pasteboard = NSPasteboard.general
         defer { pasteboard.clearContents() }

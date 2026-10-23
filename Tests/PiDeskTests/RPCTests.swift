@@ -96,6 +96,7 @@ struct RPCTests {
         await session.connect()
         #expect(session.status == .connected)
         #expect(session.models.count == 2)
+        #expect(session.messages.isEmpty, "Initial system instructions must not create a chat bubble")
         #expect(session.record.sessionPath?.hasPrefix("/tmp/fake-session-") == true)
         await session.setModel("test/two")
         await session.setThinking("high")

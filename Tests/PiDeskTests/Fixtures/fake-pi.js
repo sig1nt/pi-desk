@@ -2,7 +2,8 @@
 // Deterministic RPC peer: no credentials, network, or model calls.
 let pending = '', busy = false, queue = [], name, thinking = 'medium';
 let model = { provider: 'test', id: 'one', name: 'Test One' };
-const history = [];
+const system = { role: 'system', content: '', sections: { preamble: 'Fixture instructions' } };
+const history = [system];
 // Each independent controller is a distinct writer; reconnect preserves its path.
 const sessionArgument = process.argv.indexOf('--session');
 let sessionFile = sessionArgument >= 0 ? process.argv[sessionArgument + 1] : `/tmp/fake-session-${process.pid}.jsonl`;
@@ -11,6 +12,7 @@ const response = (request, data = {}, error) => emit({ type: 'response', id: req
 const message = (role, content) => ({ role, content, timestamp: Date.now() });
 function settled(aborted = false) { busy = false; emit({ type: 'agent_end', willRetry: false }); emit({ type: 'agent_settled', aborted }); }
 function complete(text, images = []) {
+  emit({ type: 'message_start', message: system }); emit({ type: 'message_end', message: system });
   const content = images.length ? [{ type: 'text', text }, ...images] : text;
   const user = message('user', content);
   history.push(user);

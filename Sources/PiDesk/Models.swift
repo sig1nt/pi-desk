@@ -246,6 +246,9 @@ struct ChatMessage: Identifiable {
 
     static func parse(_ json: JSONObject) -> ChatMessage? {
         let role = json["role"] as? String ?? "custom"
+        // System entries carry model instructions, not visible conversation content.
+        // Filter here for both restored history and live message events.
+        if role == "system" { return nil }
         if role == "custom", json["display"] as? Bool == false { return nil }
         var message = ChatMessage(role: role)
         if let stamp = json["timestamp"] as? Double { message.timestamp = Date(timeIntervalSince1970: stamp / 1000) }
