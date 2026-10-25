@@ -1,0 +1,79 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: Build and publish macOS release
+    runs-on: xcode-27
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.19.0'
+
+      - name: Validate release version
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]] || exit 1
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Test
+        run: scripts/test.sh --force-resolved-versions
+
+      - name: Build application
+        run: |
+          swift build -c release --force-resolved-versions
+          scripts/build-app.sh --no-build
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" dist/PiDesk.app/Contents/Info.plist
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $GITHUB_RUN_NUMBER" dist/PiDesk.app/Contents/Info.plist
+          codesign --force --sign - dist/PiDesk.app
+          codesign --verify --deep --strict dist/PiDesk.app
+          file dist/PiDesk.app/Contents/MacOS/PiDesk
+
+      - name: Package disk image
+        run: |
+          mkdir -p dist/dmg
+          ditto dist/PiDesk.app dist/dmg/PiDesk.app
+          ln -s /Applications dist/dmg/Applications
+          hdiutil create -volname "PiDesk $VERSION" -srcfolder dist/dmg -ov -format UDZO "dist/PiDesk-$VERSION-macos-arm64.dmg"
+          hdiutil verify "dist/PiDesk-$VERSION-macos-arm64.dmg"
+          cd dist
+          shasum -a 256 "PiDesk-$VERSION-macos-arm64.dmg" > SHA256SUMS.txt
+
+      - name: Preserve release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: PiDesk-macos-arm64
+          path: |
+            dist/*.dmg
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > "$RUNNER_TEMP/release-notes.md" <<'NOTES'
+          ## Install
+          Download the disk image, open it, and drag PiDesk into Applications.
+
+          - Apple Silicon (arm64), macOS 13 or newer.
+          - Requires an external Pi 1.1.0+ installation and Node.js 22.19+ on each client host.
+          - Ad-hoc signed, **not Apple-notarized**. macOS may block the first launch; if you trust this release, allow it in System Settings → Privacy & Security.
+          - Built and tested by GitHub Actions. SHA-256 checksums are included.
+          NOTES
+          gh release create "$GITHUB_REF_NAME" \
+            "dist/PiDesk-$VERSION-macos-arm64.dmg" dist/SHA256SUMS.txt \
+            --verify-tag --title "PiDesk $VERSION" --notes-file "$RUNNER_TEMP/release-notes.md"
