@@ -3,8 +3,36 @@ import AppKit
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    weak var store: DeskStore?
-    func applicationWillFinishLaunching(_ notification: Notification) { NSApp.setActivationPolicy(.regular) }
+    private let turnNotifications = TurnNotifications()
+    private var pendingNotificationSessionID: UUID?
+    weak var store: DeskStore? {
+        didSet {
+            store?.onUnviewedTurnFinished = { [weak self] client, session in
+                self?.turnNotifications.post(client: client, session: session)
+            }
+            store?.onConversationViewed = { [weak self] id in self?.turnNotifications.clear(sessionID: id) }
+            turnNotifications.isUnread = { [weak self] id in
+                self?.store?.clients.contains(where: { $0.sessions.contains(where: { $0.id == id && $0.unreadSince != nil }) }) == true
+            }
+            if let id = pendingNotificationSessionID { openNotifiedConversation(id) }
+        }
+    }
+
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        NSApp.setActivationPolicy(.regular)
+        turnNotifications.onOpenConversation = { [weak self] id in self?.openNotifiedConversation(id) }
+        turnNotifications.start()
+    }
+
+    private func openNotifiedConversation(_ id: UUID) {
+        guard let store else { pendingNotificationSessionID = id; return }
+        pendingNotificationSessionID = nil
+        guard store.openConversation(sessionID: id) else { turnNotifications.clear(sessionID: id); return }
+        let window = NSApp.windows.first { $0.canBecomeMain }
+        window?.deminiaturize(nil)
+        window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
     func applicationDidFinishLaunching(_ notification: Notification) {
         DispatchQueue.main.async {
             NSApp.activate(ignoringOtherApps: true)
@@ -86,6 +114,7 @@ struct ContentView: View {
             }
         }
         .background(Color(nsColor: .windowBackgroundColor))
+        .background(ConversationWindowObserver(onActiveChange: store.setConversationWindowActive))
         .toolbar {
             ToolbarItem(placement: .navigation) {
                 Button {
@@ -165,6 +194,11 @@ struct Sidebar: View {
                                         Image(systemName: store.isBusy(session) ? "ellipsis.bubble" : "bubble.left").font(.caption).foregroundStyle(.secondary)
                                         Text(session.title).lineLimit(1)
                                         Spacer()
+                                        if session.unreadSince != nil {
+                                            Circle().fill(Color.accentColor).frame(width: 7, height: 7)
+                                                .accessibilityLabel("Unread completed turn")
+                                                .help("Unread completed turn")
+                                        }
                                         Text(session.time).font(.caption2).foregroundStyle(.tertiary)
                                     }
                                     .padding(.vertical, 7).padding(.horizontal, 10)

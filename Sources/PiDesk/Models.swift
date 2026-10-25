@@ -56,6 +56,8 @@ struct SessionRecord: Identifiable, Codable, Equatable {
     var draft = ""
     /// Persist ambiguity across reconnect/relaunch; never silently resend this text.
     var deliveryUnknown: String?
+    /// Nil for viewed conversations (and workspaces created before unread tracking).
+    var unreadSince: Date?
 
     var time: String {
         let interval = Date().timeIntervalSince(updatedAt)

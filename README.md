@@ -31,6 +31,7 @@ These are **advisory PiDesk locks**: terminal Pi and other applications do not h
 
 - Local stdio and remote SSH RPC transports, real connection status and errors.
 - Independent conversations, streaming text/thinking, expandable tool calls/results, and Pi 1.1 tool-duration reporting.
+- Native notifications for completed turns you aren't viewing, with click-to-open navigation and persistent unread dots in the sidebar. Viewing a conversation in the active, visible window clears its dot and notifications; stopping a turn does not notify.
 - Paste images with ⌘V (or the image button), preview/remove them before sending, and render image messages in the transcript.
 - Model and supported thinking-level selection from Pi's actual catalog.
 - Composer completion for `@` project paths on the connected local/SSH client and for extension, prompt-template, and skill slash commands reported by that Pi RPC session.
@@ -45,6 +46,8 @@ These are **advisory PiDesk locks**: terminal Pi and other applications do not h
 - Transient extension dialogs/widgets/statuses reset when disconnecting/reconnecting.
 
 **⌘N** creates a conversation; **⌘⇧N** opens the new client dialog; **⌘W** closes the current conversation; **⌘Return** sends; **⌘,** opens Settings. Type **@** for connected-project paths or **/** for available Pi commands, then click a completion or press **Tab**. Client and conversation menus expose additional actions.
+
+Desktop notifications require the bundled **PiDesk.app** (built with `scripts/build-app.sh`). macOS asks for permission on the first unviewed completion; banners and sounds can be configured in **System Settings → Notifications → PiDesk**. Unread dots work even if permission is denied or the app is launched with `swift run`.
 
 Pi can execute tools with the permissions of the host account. PiDesk does not add a sandbox or automatically approve project trust. Disconnecting or quitting stops the GUI-owned processes; remote jobs are not a durable background service.
 

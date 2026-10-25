@@ -33,7 +33,10 @@ function complete(text, images = []) {
   history.push(tool);
   emit({ type: 'message_start', message: tool }); emit({ type: 'message_end', message: tool });
   emit({ type: 'agent_end', willRetry: true });
-  setTimeout(settled, 80);
+  setTimeout(() => {
+    settled();
+    if (text === 'duplicate-settlement') settled();
+  }, 80);
 }
 function handle(request) {
   switch (request.type) {

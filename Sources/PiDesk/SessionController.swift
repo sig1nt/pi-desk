@@ -29,6 +29,8 @@ final class SessionController: ObservableObject, Identifiable {
     @Published private(set) var projectPaths: [ProjectPath] = []
     @Published var error: String?
     var onRecordChange: ((SessionRecord) -> Void)?
+    var onTurnFinished: (() -> Void)?
+    private var hasActiveTurn = false
     private var connection: RPCConnection?
     private var retiringConnection: RPCConnection?
     private var activityRevision = 0
@@ -176,6 +178,7 @@ final class SessionController: ObservableObject, Identifiable {
     }
 
     private func resetActivity() {
+        hasActiveTurn = false
         isBusy = false; isSubmitting = false; isChangingSettings = false
         activity = ""; queued = []; activeMessages = [:]; blocks = [:]
         clearExtensionState()
@@ -512,14 +515,21 @@ final class SessionController: ObservableObject, Identifiable {
             activityRevision += 1
         }
         switch event["type"] as? String {
-        case "agent_start": isBusy = true; activity = "Working…"
+        case "agent_start":
+            hasActiveTurn = true
+            isBusy = true; activity = "Working…"
         case "agent_settled":
+            // Only final settlement completes a turn, not tool steps, retries,
+            // compaction, prompt acknowledgements, or a disconnected transport.
+            let finished = hasActiveTurn && event["aborted"] as? Bool != true
+            hasActiveTurn = false
             isBusy = false; activity = ""
             if event["aborted"] as? Bool == true {
                 activeMessages = [:]; blocks = [:]
                 for index in messages.indices { messages[index].isRunning = false }
             }
             record.updatedAt = Date()
+            if finished { onTurnFinished?() }
             if let rpc = connection { Task { try? await refreshState(rpc); await refreshStats(rpc) } }
         case "message_start", "message_end":
             guard let raw = event["message"] as? JSONObject, var message = ChatMessage.parse(raw) else { return }

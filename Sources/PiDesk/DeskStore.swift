@@ -4,8 +4,11 @@ import Combine
 @MainActor
 final class DeskStore: ObservableObject {
     @Published private(set) var clients: [Client] = []
-    @Published var selectedClientID: UUID?
-    @Published var selectedSessionID: UUID?
+    @Published var selectedClientID: UUID? { didSet { markSelectedConversationViewed() } }
+    @Published var selectedSessionID: UUID? { didSet { markSelectedConversationViewed() } }
+    private var isConversationWindowActive = false
+    var onUnviewedTurnFinished: ((Client, SessionRecord) -> Void)?
+    var onConversationViewed: ((UUID) -> Void)?
     @Published var connectOnLaunch = true
     @Published var error: String?
     private var controllers: [UUID: SessionController] = [:]
@@ -60,6 +63,7 @@ final class DeskStore: ObservableObject {
             self.clients[c].sessions[s] = record
             self.scheduleSave()
         }
+        controller.onTurnFinished = { [weak self] in self?.turnFinished(sessionID: record.id) }
         observations[record.id] = controller.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
         controllers[record.id] = controller
         return controller
@@ -74,6 +78,43 @@ final class DeskStore: ObservableObject {
     }
 
     func isBusy(_ session: SessionRecord) -> Bool { controllers[session.id]?.isBusy == true }
+
+    func setConversationWindowActive(_ active: Bool) {
+        isConversationWindowActive = active
+        markSelectedConversationViewed()
+    }
+
+    private func turnFinished(sessionID: UUID) {
+        guard let client = clients.first(where: { $0.sessions.contains(where: { $0.id == sessionID }) }),
+              let controller = controllers[sessionID] else { return }
+        if isConversationWindowActive && selectedClientID == client.id && selectedSessionID == sessionID {
+            markSelectedConversationViewed()
+            return
+        }
+        controller.record.unreadSince = Date()
+        onUnviewedTurnFinished?(client, controller.record)
+    }
+
+    private func markSelectedConversationViewed() {
+        guard isConversationWindowActive,
+              let c = clients.firstIndex(where: { $0.id == selectedClientID }),
+              let s = clients[c].sessions.firstIndex(where: { $0.id == selectedSessionID }),
+              clients[c].sessions[s].unreadSince != nil else { return }
+        let id = clients[c].sessions[s].id
+        if let controller = controllers[id] { controller.record.unreadSince = nil }
+        else { clients[c].sessions[s].unreadSince = nil }
+        onConversationViewed?(id)
+        scheduleSave()
+    }
+
+    /// Notification targets may refer to conversations that have since been closed.
+    @discardableResult
+    func openConversation(sessionID: UUID) -> Bool {
+        guard let client = clients.first(where: { $0.sessions.contains(where: { $0.id == sessionID }) }),
+              let record = client.sessions.first(where: { $0.id == sessionID }) else { return false }
+        select(client: client, session: record)
+        return true
+    }
 
     func start() {
         guard !started else { return }
@@ -172,6 +213,7 @@ final class DeskStore: ObservableObject {
     }
 
     private func discardController(_ id: UUID) {
+        onConversationViewed?(id)
         if let rpc = controllers.removeValue(forKey: id)?.disconnect() {
             retiringConnections.append(rpc)
             Task {
@@ -252,6 +294,7 @@ final class DeskStore: ObservableObject {
         try data.write(to: workspaceURL, options: .atomic)
         // Once replaced, always adopt the imported in-memory state, even if chmod fails.
         try? manager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: workspaceURL.path)
+        for client in clients { for session in client.sessions { onConversationViewed?(session.id) } }
         controllers = [:]; observations = [:]; retiringConnections = []
         clients = replacement.clients
         selectedClientID = replacement.selectedClientID

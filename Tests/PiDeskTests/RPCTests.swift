@@ -93,6 +93,8 @@ struct RPCTests {
 
     @Test func streamingFinalMessagesToolsAndModelControls() async throws {
         let session = try controller()
+        var completions = 0
+        session.onTurnFinished = { completions += 1 }
         await session.connect()
         #expect(session.status == .connected)
         #expect(session.models.count == 2)
@@ -107,7 +109,9 @@ struct RPCTests {
         await session.send()
         try await eventually { session.messages.count == 3 }
         #expect(session.isBusy, "agent_end must not settle a run that can retry")
+        #expect(completions == 0)
         try await eventually { !session.isBusy }
+        #expect(completions == 1)
         try #require(session.messages.count == 3, "Tool result events must not duplicate the tool row")
         #expect(session.messages[0].body == "hello")
         #expect(session.messages[0].images.count == 1)
@@ -119,6 +123,40 @@ struct RPCTests {
         #expect(session.messages[2].durationMS == 1234)
         #expect(session.messages[2].toolStatus == "Done · 1.2s")
         #expect(session.record.draft.isEmpty)
+        if let rpc = session.disconnect() { await rpc.waitForExit() }
+    }
+
+    @Test func completionIgnoresAbortsCompactionDisconnectsAndDuplicateSettlement() async throws {
+        let session = try controller()
+        var completions = 0
+        session.onTurnFinished = { completions += 1 }
+        await session.connect()
+        #expect(completions == 0, "Loading history isn't a finished turn")
+        for text in ["reject", "/handled"] {
+            session.record.draft = text
+            await session.send()
+            #expect(completions == 0)
+        }
+        await session.compact()
+        #expect(completions == 0)
+        session.record.draft = "hold"
+        await session.send()
+        await session.stop()
+        #expect(completions == 0)
+        session.record.draft = "duplicate-settlement"
+        await session.send()
+        try await eventually { !session.isBusy }
+        #expect(completions == 1)
+        session.record.draft = "hold"
+        await session.send()
+        if let rpc = session.disconnect() { await rpc.waitForExit() }
+        #expect(completions == 1)
+        await session.connect()
+        #expect(completions == 1)
+        session.record.draft = "another turn"
+        await session.send()
+        try await eventually { !session.isBusy }
+        #expect(completions == 2)
         if let rpc = session.disconnect() { await rpc.waitForExit() }
     }
 
@@ -229,6 +267,39 @@ struct RPCTests {
         #expect(session.messages.last?.body == "Denied")
         #expect(session.dialogs.isEmpty)
         if let rpc = session.disconnect() { await rpc.waitForExit() }
+    }
+
+    @Test func backgroundCompletionNotifiesAndNotificationTargetOpensCorrectConversation() async throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let first = SessionRecord(workingDirectory: "/tmp")
+        let second = SessionRecord(workingDirectory: "/tmp")
+        let local = Client(name: "First client", executable: try fixture().path, sessions: [first])
+        let other = Client(name: "Other client", executable: try fixture().path, sessions: [second])
+        let workspace = Workspace(clients: [local, other], selectedClientID: local.id, selectedSessionID: first.id, connectOnLaunch: false)
+        try JSONEncoder().encode(workspace).write(to: url)
+        let store = DeskStore(workspaceURL: url)
+        store.setConversationWindowActive(true)
+        var notifications: [(UUID, UUID)] = []
+        store.onUnviewedTurnFinished = { client, record in notifications.append((client.id, record.id)) }
+        let session = store.controller(for: second, client: other)
+        await session.connect()
+        session.record.draft = "background work"
+        await session.send()
+        try await eventually { !session.isBusy }
+        #expect(notifications.count == 1)
+        #expect(notifications.first?.0 == other.id)
+        #expect(notifications.first?.1 == second.id)
+        #expect(store.clients[1].sessions[0].unreadSince != nil)
+        store.setConversationWindowActive(false)
+        #expect(store.openConversation(sessionID: second.id))
+        #expect(store.selectedClientID == other.id)
+        #expect(store.selectedSessionID == second.id)
+        #expect(session.record.unreadSince != nil, "Notification navigation waits for the window to become active")
+        store.setConversationWindowActive(true)
+        #expect(session.record.unreadSince == nil)
+        await Task.yield() // Allow the selection's connect task to finish before shutdown.
+        await store.shutdown()
     }
 
     @Test func independentConversationsDoNotMixMessages() async throws {
