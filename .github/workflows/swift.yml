@@ -1,0 +1,39 @@
+name: Swift Package
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: swift-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Build and test
+    # Swift 6.4 and SwiftUI macros require Xcode 27, not standalone Swift/CLT.
+    runs-on: xcode-27
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js for RPC test fixtures
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.19.0'
+
+      - name: Show toolchain versions
+        run: |
+          xcodebuild -version
+          swift --version
+          node --version
+
+      - name: Build Swift package
+        run: swift build --force-resolved-versions
+
+      - name: Test Swift package
+        run: scripts/test.sh --force-resolved-versions

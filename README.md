@@ -69,6 +69,8 @@ PIDESK_TEST_REAL_PI=1 scripts/test.sh --filter realPiHandshakeWithoutModelCalls
 swift build
 ```
 
+GitHub Actions builds and tests the package on pushes, pull requests, and manual runs via `.github/workflows/swift.yml`. CI uses GitHub's `xcode-27` preview runner for Swift 6.4 and Node.js 22.19 for the RPC fixtures, honoring `Package.resolved`. The opt-in real-Pi test remains disabled; no Pi installation or API credentials are needed.
+
 The test script handles the Swift Testing framework paths omitted by some Command Line Tools installations, without changing `xcode-select`. A macOS 13 deployment-target warning from the test framework is expected on newer toolchains; it does not affect the application build.
 
 Tests cover framing/Unicode, RPC correlation/errors/timeouts/exits, Pi 1.1 prompt dispositions and lifecycle fields, streamed message assembly, tool deduplication/durations, model/thinking controls, queue restoration, extension confirmations, session isolation, reconnect, compaction, quoting, and workspace persistence. The opt-in real-Pi test performs protocol queries only—no model/API call.
